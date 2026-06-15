@@ -169,3 +169,16 @@ cython_debug/
 **/data/
 **/results/
 
+# OS / editor cruft
+.DS_Store
+.vscode/
+*.code-workspace
+
+# Generated figures / movies / data dumps (regenerable, large)
+*.png
+*.pdf
+*.gif
+*.mp4
+*.npz
+*vec_nit.txt
+

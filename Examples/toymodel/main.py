@@ -6,6 +6,13 @@ from mpi4py import MPI
 from scipy.interpolate import interp1d
 from scipy.integrate import solve_ivp
 import sys
+import os
+
+# Ensure the top-level repository root is on sys.path so NiTROM package can be imported.
+HERE = os.path.dirname(os.path.abspath(__file__))        # <repo>/NiTROM/Examples/toymodel
+ROOT = os.path.normpath(os.path.join(HERE, "..", ".."))  # <repo>/NiTROM
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 import pymanopt
 import pymanopt.manifolds as manifolds
@@ -16,7 +23,10 @@ plt.rcParams.update({"font.family":"serif","font.sans-serif":["Computer Modern"]
 plt.rc('text.latex',preamble=r'\usepackage{amsmath}')
 
 from NiTROM.PyManopt_Functions.my_pymanopt_classes import myAdaptiveLineSearcher
-from NiTROM.Optimization_Functions import classes, nitrom_functions, opinf_functions as opinf_fun, troop_functions
+from NiTROM.Optimization_Functions import (classes, 
+                                           nitrom_functions, 
+                                           opinf_functions as opinf_fun, 
+                                           troop_functions)
 from NiTROM.Optimization_Functions import opinf_functions_energypreserving as opinf_fun_ep
 import fom_class
 
@@ -40,7 +50,8 @@ fom = fom_class.full_order_model(A2,A3,B,C)
 
 #%% Generate training trajectories and save to file
 
-traj_path = "./trajectories/"
+traj_path = os.path.join(HERE, "trajectories/") 
+os.makedirs(traj_path, exist_ok=True)
 
 fname_traj = traj_path + "traj_%03d.npy"
 fname_weight = traj_path + "weight_%03d.npy"
@@ -60,7 +71,11 @@ weights = np.zeros(len(betas))
 for k in range (len(betas)):
     u = betas[k]*np.ones(3)
     
-    sol = solve_ivp(fom.evaluate_fom_dynamics,[0,time[-1]],np.zeros(3),'RK45',t_eval=time,args=(u,))
+    sol = solve_ivp(fom.evaluate_fom_dynamics,
+                    [0,time[-1]],np.zeros(3),
+                    'RK45',
+                    t_eval=time,
+                    args=(u,))
     
     dX = np.zeros((3,len(time)))
     for j in range (sol.y.shape[-1]):
@@ -101,7 +116,12 @@ which_times = np.arange(0,pool.n_snapshots,1)
 leggauss_deg = 5
 nsave_rom = 2
 
-opt_obj_inputs = (pool,which_trajs,which_times,leggauss_deg,nsave_rom,[1,2])
+opt_obj_inputs = (pool,
+                  which_trajs,
+                  which_times,
+                  leggauss_deg,
+                  nsave_rom,
+                  [1,2])
 # opt_obj_kwargs = {'stab_promoting_pen':1e-2,'stab_promoting_tf':20,'stab_promoting_ic':(np.random.randn(r),)}
 
 
