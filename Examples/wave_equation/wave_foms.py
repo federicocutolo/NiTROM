@@ -71,9 +71,9 @@ class WaveEquationFOM:
             t_eval=t_eval,
         )
 
-    def hamiltonian(self, Z):
-        """Z: (2N, n_t) -> H: (n_t,)"""
-        N = self.N; Q, P = Z[:N], Z[N:]
+    def hamiltonian(self, X):
+        """X: (2N, n_t) -> H: (n_t,)"""
+        N = self.N; Q, P = X[:N], X[N:]
         return 0.5*(np.sum(P**2, 0) - np.einsum('ij,ij->j', Q, self.K @ Q))
 
 
@@ -127,7 +127,7 @@ class PeriodicWaveEquationFOM:
             Z[:, k] = step @ Z[:, k - 1]
         return Z
 
-    def hamiltonian(self, Z):
+    def hamiltonian(self, X):
         N = self.N
-        Q, P = Z[:N], Z[N:]
+        Q, P = X[:N], X[N:]
         return 0.5 * (np.sum(P**2, 0) - np.einsum('ij,ij->j', Q, self.K @ Q))

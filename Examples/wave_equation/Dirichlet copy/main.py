@@ -13,13 +13,12 @@ WAVE = os.path.dirname(HERE)                          # .../wave_equation
 if WAVE not in sys.path:
     sys.path.insert(0, WAVE)
 
-from wave_cases import get_case, TEST_SEED, N_TEST    # physics + paths + sampling box + test draw
+from wave_cases import get_case                       # physics (N, L, c) + paths + sampling box
 import wave_sampling                                  # shared IC sampler (single source of truth)
-import wave_roms                                      # shared ROM bases (cotangent lift + POD)
-from matplotlib.lines import Line2D
 
-# ROM bases: main.py writes BOTH Phi_cl.npy (cotangent lift) and Phi_pod.npy
-# (plain POD); train_nitrom.py / test_nitrom.py select one via their BASIS switch.
+# ROM basis: main.py writes Phi_cl.npy (cotangent lift) or Phi_pod.npy (plain POD).
+# Downstream scripts load the matching file directly.
+USE_COTANGENT_LIFT = True   # True -> symplectic cotangent-lift basis; False -> plain POD
 
 # ── Data generation ───────────────────────────────────────────────────────────
 # The sampling algorithm (gaussian_ic, the draw loop) lives in wave_sampling.py
@@ -32,10 +31,8 @@ def generate_snapshots(fom, ranges, n_traj, T, n_t, seed=42):
     return t, X, dX, params
 
 
-def plot_sampling(fom, params, X_train, ranges, test_params=None):
-    """Save two separate figures: parameter scatter and overlaid q(x,0).
-    ``test_params`` (from the SAME sampler, TEST_SEED stream) are drawn as
-    crosses / dashed lines so train and held-out test are both visible."""
+def plot_sampling(fom, params, X_train, ranges):
+    """Save two separate figures: parameter scatter and overlaid q(x,0)."""
     A, sigma = params[:, 0], params[:, 1]
 
     # Figure 1: parameter-space scatter ----------------------------------------
@@ -46,16 +43,11 @@ def plot_sampling(fom, params, X_train, ranges, test_params=None):
                                facecolor="none", edgecolor="k",
                                linestyle="--", linewidth=1.0, zorder=0,
                                label="sampling box"))
-    ax.scatter(A, sigma, facecolor="k", edgecolor="k", s=60, marker="o",
-               label="train")
-    if test_params is not None:
-        ax.scatter(test_params[:, 0], test_params[:, 1], color="0.35", s=55,
-                   marker="x", linewidths=1.6, label="test")
+    ax.scatter(A, sigma, facecolor="k", edgecolor="k", s=60, marker="o")
     ax.set_xlabel(r"wave amplitude $A$", fontsize=14)
     ax.set_ylabel(r"Gaussian width $\sigma$", fontsize=14)
     ax.set_title("Sampling", fontsize=14)
     ax.margins(x=0.1, y=0.15)
-    ax.legend(fontsize=11, framealpha=0.95)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f"sampling.png"))
     plt.savefig(os.path.join(output_dir, f"sampling.pdf"), bbox_inches="tight")
@@ -68,19 +60,6 @@ def plot_sampling(fom, params, X_train, ranges, test_params=None):
         q0    = X_train[k, :fom.N, 0]
         q_pad = np.concatenate(([0.0], q0, [0.0]))
         ax.plot(x_plot, q_pad, color="k", linewidth=1.2, alpha=0.85)
-    if test_params is not None:
-        periodic_L = fom.L if ranges.get("periodic", False) else None
-        for amp, sig, mu, direction in test_params:
-            q0    = wave_sampling.gaussian_ic(fom, amp=amp, width=sig, x0=mu,
-                                              direction=direction,
-                                              periodic_L=periodic_L)[:fom.N]
-            q_pad = np.concatenate(([0.0], q0, [0.0]))
-            ax.plot(x_plot, q_pad, color="0.35", linewidth=1.0,
-                    linestyle="--", alpha=0.8)
-        ax.legend(handles=[Line2D([], [], color="k", lw=1.2, label="train"),
-                           Line2D([], [], color="0.35", lw=1.0, ls="--",
-                                  label="test")],
-                  fontsize=11, framealpha=0.95)
     ax.set_xlabel(r"$x$", fontsize=14)
     ax.set_ylabel(r"$q(x,\,0)$", fontsize=14)
     ax.set_title(r"Initial displacement (single-running wave)", fontsize=14)
@@ -130,8 +109,8 @@ if __name__ == "__main__":
     ranges  = case.sample_ranges
     N, L, c = case.N, case.L, case.c   # used only for labels/plots below
 
-    n_traj = 10         # number of trajectories to generate
-    n_t    = 100        # number of time points per trajectory (including t=0)
+    n_traj = 1         # number of trajectories to generate
+    n_t    = 10        # number of time points per trajectory (including t=0)
     T      = 2.0        # integration time for each trajectory
 
     output_dir = case.data_dir         # Dirichlet/trajectories
@@ -145,10 +124,7 @@ if __name__ == "__main__":
     np.save(os.path.join(output_dir, "x.npy"), fom.x)
     np.save(os.path.join(output_dir, "sample_params.npy"), sample_params)
 
-    # Held-out test draw (TEST_SEED stream, same box) -- plotted, never trained on.
-    test_params = wave_sampling.draw_params(N_TEST, np.random.default_rng(TEST_SEED),
-                                            ranges)
-    plot_sampling(fom, sample_params, X_train, ranges, test_params=test_params)
+    plot_sampling(fom, sample_params, X_train, ranges)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     fig, ax2 = plt.subplots(figsize=(6, 4))
@@ -208,49 +184,58 @@ if __name__ == "__main__":
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, f"snapshots.png"))
 
-    # ── ROM bases -> BOTH Phi_cl.npy and Phi_pod.npy ──────────────────────────
-    # (train_nitrom / test_nitrom select one via their BASIS switch; both
-    # constructions live in wave_roms.py, the single source of truth)
+    # ── ROM basis -> Phi_cl.npy / Phi_pod.npy (USE_COTANGENT_LIFT selects how) ─
+    if USE_COTANGENT_LIFT:
+        # Cotangent lift (Peng & Mohseni 2016): POD of the combined [Q | P] matrix
+        # so Jhat = Phi.T J Phi is canonical [[0, I],[-I, 0]] with cond(Jhat) = 1 by construction.
+        Q = X_train_matrix[:fom.N, :]
+        P = X_train_matrix[fom.N:, :]
+        X_qp = np.hstack([Q, P]) 
+        print("[shape check] X_qp:", X_qp.shape)                               # (N, 2*n_s)
+        Uqp, sqp, _ = np.linalg.svd(X_qp, full_matrices=False)
+        print("[shape check] Uqp:", Uqp.shape)                               # (N, 2*n_s)
 
-    # Cotangent lift (Peng & Mohseni 2016): POD of the combined [Q | P] matrix,
-    # so Jhat = Phi.T J Phi is canonical [[0, I],[-I, 0]] with cond(Jhat) = 1.
-    Phi_cl, s_cl, var_rank = wave_roms.cotangent_lift_basis(
-        X_train_matrix, fom.N, rank=None, energy=0.99)
-    ev_cl = np.cumsum(s_cl**2) / np.sum(s_cl**2)
-    print(f"Cotangent-lift basis (Peng-Mohseni): spatial rank={var_rank} "
-          f"(captures {ev_cl[var_rank - 1]*100:.4f}% energy), "
-          f"basis shape={Phi_cl.shape}")
+        explained_var = np.cumsum(sqp**2) / np.sum(sqp**2)
+        var_rank = int(np.argmax(explained_var > 0.99))   # rank to capture 99% variance in [Q; P]
 
-    # Plain POD of the full (q, p) state (rank kept even + capped in pod_basis).
-    Phi_pod, s_pod, r_pod = wave_roms.pod_basis(X_train_matrix, rank=None, energy=0.85)
-    ev_pod = np.cumsum(s_pod**2) / np.sum(s_pod**2)
-    print(f"Plain POD basis: r={r_pod} "
-          f"(captures {ev_pod[r_pod - 1]*100:.4f}% energy)")
+        Phi_qp  = Uqp[:, :var_rank]
+        print("[shape check] Phi_qp:", Phi_qp.shape)                               # (N, 2*n_s)
 
-    np.save(os.path.join(output_dir, "Phi_cl.npy"),  Phi_cl)
-    np.save(os.path.join(output_dir, "Phi_pod.npy"), Phi_pod)
-    print(f"Saved Phi_cl.npy {Phi_cl.shape} and Phi_pod.npy {Phi_pod.shape} in {output_dir}")
+        zero    = np.zeros_like(Phi_qp)
+        Phi_cl = np.block([[Phi_qp, zero],
+                            [zero,   Phi_qp]]) # shape (2N, 2*var_rank)
+        print("[shape check] Phi_cl:", Phi_cl.shape)                               # (N, 2*n_s)
 
-    # ── SVD plot: explained variance of BOTH bases (black & white) ────────────
-    # CL curve: singular values of the stacked [Q | P] block (rank = modes/field);
-    # POD curve: singular values of the full [q; p] snapshot matrix (rank = r).
-    fig, ax = plt.subplots(figsize=(6, 5))
-    ax.plot(np.arange(1, len(s_cl) + 1),  ev_cl * 100,  color="k", linestyle="-",
-            marker="o", markerfacecolor="k",    label=r"Cotangent lift $[Q\,|\,P]$")
-    ax.plot(np.arange(1, len(s_pod) + 1), ev_pod * 100, color="k", linestyle="--",
-            marker="s", markerfacecolor="none", label="POD (full state)")
-    ax.axvline(var_rank, color="k", linestyle=":",  linewidth=1,
-               label=f"CL rank = {var_rank} (Basis Dimensions = {Phi_cl.shape[1]})")
-    ax.axvline(r_pod,    color="k", linestyle="-.", linewidth=1,
-               label=f"POD rank = {r_pod}")
-    ax.set_xlabel(r"Index $i$", fontsize=14)
-    ax.set_ylabel(r"Captured energy [%]", fontsize=14)
-    ax.set_ylim(20, 105)
-    ax.set_title("Energy captured by bases choice", fontsize=14)
-    ax.ticklabel_format(style='plain', axis='both')
-    ax.legend(fontsize=11)
-    fig.tight_layout()
-    fig.savefig(os.path.join(output_dir, f"svd.png"))
-    fig.savefig(os.path.join(output_dir, f"svd.pdf"), bbox_inches="tight")
-    plt.close(fig)
+        captured_variance = explained_var[var_rank]
+        print(f"Cotangent-lift basis (Peng-Mohseni): spatial rank={var_rank} "
+              f"(captures {captured_variance*100:.4f}% energy), "
+              f"basis shape={Phi_cl.shape}")
+
+    else:
+        # Plain POD of the full (q, p) state.
+        U, s, _ = np.linalg.svd(X_train_matrix, full_matrices=False)
+        explained_var = np.cumsum(s**2) / np.sum(s**2)
+        var_rank = int(np.argmax(explained_var > 0.99))
+        if var_rank % 2:
+            var_rank += 1
+        Phi_pod = U[:, :var_rank]
+        print(f"Plain POD basis: r={Phi_pod.shape[1]}")
+
+    basis      = Phi_cl if USE_COTANGENT_LIFT else Phi_pod
+    basis_file = "Phi_cl.npy" if USE_COTANGENT_LIFT else "Phi_pod.npy"
+    np.save(os.path.join(output_dir, basis_file), basis)
+    print(f"Saved {basis_file} (cotangent_lift={USE_COTANGENT_LIFT}) in {output_dir}")
+
+
+    # Plot
+    ax, fig = plt.subplots(figsize=(6, 5))
+    plt.semilogy((1 - explained_var), marker="o", color="k")
+    plt.xlabel(r"Index $i$", fontsize=14)
+    plt.ylabel(r"$ 1 - \frac{\left(\sum \sigma^2\right)_i}{\sum\sigma^2}$", fontsize=14)
+    plt.axvline(var_rank, color="k", linestyle="--", label=f"99% var at rank={var_rank}")
+    plt.legend(fontsize=12)
+    plt.tight_layout()
+    plt.title("Explained variance", fontsize=14)
+    plt.savefig(os.path.join(output_dir, f"svd.png"))
+    plt.savefig(os.path.join(output_dir, f"svd.pdf"), bbox_inches="tight")
 

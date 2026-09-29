@@ -29,6 +29,16 @@ except ImportError:  # pragma: no cover - supports direct module loading in test
     symplectic_integrate = _symplectic_module.symplectic_integrate
     symplectic_solve = _symplectic_module.symplectic_solve
 
+try:
+    from .linear_symplectic_integrators import linear_symplectic_solve, linear_propagator
+except ImportError:  # pragma: no cover - supports direct module loading in tests
+    _lin_path = os.path.join(os.path.dirname(__file__), "linear_symplectic_integrators.py")
+    _lin_spec = importlib.util.spec_from_file_location("nitrom_linear_symplectic_integrators", _lin_path)
+    _lin_module = importlib.util.module_from_spec(_lin_spec)
+    _lin_spec.loader.exec_module(_lin_module)
+    linear_symplectic_solve = _lin_module.linear_symplectic_solve
+    linear_propagator = _lin_module.linear_propagator
+
 
 _RUNTIME_PROFILE = {}
 
@@ -213,7 +223,117 @@ class mpi_pool:
             dX = [np.load(self.fnames_deriv[k]) for k in range (self.my_n_traj)]
             self.dX = np.zeros((self.my_n_traj,self.N,self.n_snapshots))
             for k in range (self.my_n_traj): self.dX[k,] = dX[k]
-        
+
+    @classmethod
+    def from_single_trajectory(cls, comm, fname_traj, fname_time,
+                               n_segments=None, fname_derivs=None,
+                               fname_weights=None):
+        """
+        Build an mpi_pool from a SINGLE trajectory stored as one 2D matrix.
+
+        The trajectory is provided as a ``(states, times)`` matrix (e.g. x.npy)
+        and is split into contiguous, equal-length time segments distributed
+        across the MPI ranks (one or more segments per rank). This parallelizes
+        a lone trajectory with the very same machinery NiTROM already uses for
+        many trajectories: each segment is treated as an independent short
+        trajectory whose initial condition is the true FOM state at the segment
+        start (a multiple-shooting decomposition). The per-rank contributions
+        are summed across ranks inside the cost/gradient, so the result is the
+        average error over all segments and snapshots.
+
+        All segments share the same length ``L = n_times // n_segments`` and the
+        same time grid, so the downstream ``optimization_objects`` (which slices
+        a common ``which_times`` across trajectories) works unchanged. With one
+        rank and the default ``n_segments`` this reduces to the original
+        single-trajectory behavior.
+
+        Parameters
+        ----------
+        comm : mpi4py.MPI.Intracomm
+            MPI communicator.
+        fname_traj : str
+            Path to the ``(states, times)`` state matrix, e.g. 'x.npy'.
+        fname_time : str
+            Path to the time vector of the full trajectory, e.g. 'time.npy'.
+        n_segments : int, optional
+            Number of segments to split the trajectory into. Defaults to the
+            communicator size (one segment per rank). Must be >= comm size.
+        fname_derivs : str, optional
+            Path to the ``(states, times)`` velocity matrix, e.g. 'xdot.npy'.
+        fname_weights : str, optional
+            Path to a scalar (or per-segment) weight applied to every segment.
+            Defaults to unit weights.
+        """
+        if MPI is None:
+            raise ModuleNotFoundError(
+                "mpi4py is required to use mpi_pool. Install mpi4py or avoid MPI-dependent workflows."
+            )
+
+        self = cls.__new__(cls)
+        self.comm = comm
+        self.size = comm.Get_size()
+        self.rank = comm.Get_rank()
+
+        n_segments = self.size if n_segments is None else int(n_segments)
+        if n_segments < self.size:
+            raise ValueError(
+                "You have more MPI processes (%d) than trajectory segments (%d)!"
+                % (self.size, n_segments))
+
+        # Distribute the segments over ranks exactly like the file-based loader.
+        self.n_traj = n_segments
+        self.my_n_traj = n_segments // self.size
+        self.my_n_traj += 1 if np.mod(n_segments, self.size) > self.rank else 0
+
+        self.counts = np.zeros(self.size, dtype=np.int64)
+        self.comm.Allgather([np.asarray([self.my_n_traj]), MPI.INT], [self.counts, MPI.INT])
+        self.disps = np.concatenate(([0], np.cumsum(self.counts)[:-1]))
+
+        # Memory-map the full matrices so each rank materializes only its segments.
+        Xfull = np.load(fname_traj, mmap_mode='r')
+        self.N, n_times = Xfull.shape
+        L = n_times // n_segments
+        if L == 0:
+            raise ValueError(
+                "n_segments=%d exceeds the %d available snapshots." % (n_segments, n_times))
+        self.n_snapshots = L
+
+        if self.rank == 0:
+            print("Hello, you are running NiTROM with %d MPI processors." % self.size)
+            print("Single trajectory (%d x %d) split into %d segments of %d snapshots."
+                  % (self.N, n_times, n_segments, L))
+            dropped = n_times - n_segments * L
+            if dropped:
+                print("  (dropping %d trailing snapshots so all segments are equal length)" % dropped)
+
+        def _segment(mm, g):
+            c0 = g * L
+            return np.asarray(mm[:, c0:c0 + L])
+
+        self.X = np.zeros((self.my_n_traj, self.N, L))
+        for k in range(self.my_n_traj):
+            self.X[k] = _segment(Xfull, k + self.disps[self.rank])
+        del Xfull
+
+        if fname_derivs is not None:
+            dXfull = np.load(fname_derivs, mmap_mode='r')
+            self.dX = np.zeros((self.my_n_traj, self.N, L))
+            for k in range(self.my_n_traj):
+                self.dX[k] = _segment(dXfull, k + self.disps[self.rank])
+            del dXfull
+
+        self.time = np.load(fname_time)[:L]
+        self.F = np.zeros((self.N, self.my_n_traj))
+
+        self.weights = np.ones(self.my_n_traj)
+        if fname_weights is not None:
+            w = np.asarray(np.load(fname_weights)).reshape(-1)
+            self.weights = np.full(self.my_n_traj, w[0]) if w.size == 1 else w[
+                self.disps[self.rank]:self.disps[self.rank] + self.my_n_traj]
+
+        return self
+
+
 class optimization_objects:
 
     def __init__(self,
@@ -567,31 +687,39 @@ class HamiltonianROM(BaseROM):
     def build_projection_operators(self):
         """
         Build the symplectic reduction operators associated with Phi.
+
+        J stays SPARSE and the n x n projector is never formed: for the
+        uncompressed FOM (n ~ 1e4+) a dense J or decoder @ encoder is O(n^2)
+        memory (GBs) allocated on EVERY cost/gradient call. Everything the
+        objectives need is J-matvecs and the thin (n x r) JU / decoder.
         """
         if self.Phi is None:
             raise ValueError("Hamiltonian ROM projection operators require Phi.")
 
-        J = self.J.toarray() if hasattr(self.J, "toarray") else self.J
         U = self.Phi
-        JU = J @ U
+        JU = np.asarray(self.J @ U)                  # thin (n, r); J stays sparse
         M = JU.T @ U
         M_inv = np.linalg.inv(M)
         M_inv_T = M_inv.T
         decoder = U @ M_inv
         encoder = JU.T
-        projector = decoder @ encoder
 
         return {
             "encoder": encoder,
             "decoder": decoder,
-            "projector": projector,
-            "J": J,
+            "J": self.J,
             "JU": JU,
             "M": M,
             "M_inv": M_inv,
             "M_inv_T": M_inv_T,
             "Jhat": self.Jhat,
         }
+
+    def project(self, x):
+        """Symplectic projection decoder @ (encoder @ x), factored so the n x n
+        projector matrix is never materialized."""
+        ops = self.build_projection_operators()
+        return ops["decoder"] @ (ops["encoder"] @ x)
 
     def integrate(self, time: np.ndarray, x0: np.ndarray, forcing=None, dt=None) -> list[np.ndarray, np.array]:
         """
@@ -614,27 +742,36 @@ class HamiltonianROM(BaseROM):
         # print(f"[rom.integrate] dt={dt}, len(time)={len(time)}", flush=True)
 
         if forcing is not None:
-            raise NotImplementedError("HamiltonianROM.integrate does not support forcing yet.")
+            raise NotImplementedError("HamiltonianROM.integrate does not support forcing.")
 
         if len(time) < 2:
             raise ValueError("Hamiltonian ROM integration requires at least two time points.")
 
-        # X = symplectic_solve(
-        #     rhs=self.evaluate_rom_rhs,
-        #     jacobian=self.evaluate_rom_rhs_jacobian,
-        #     z0=x0,
-        #     t_eval=time,
-        #     dt=dt,
-        # )
+        # Fast path: a purely quadratic Hamiltonian (poly_comp == [1]) has LINEAR
+        # dynamics  z' = A z,  A = Jhat (A2 + A2^T),  so the implicit-midpoint solve
+        # is the exact Cayley transform -- no Newton, propagator precomputed once.
+        # Identical trajectory to the general integrator (to round-off), far cheaper.
+        if list(self.poly_comp) == [1]:
+            A2 = self.operators[0]
+            A_dyn = np.asarray(self.Jhat) @ (A2 + A2.T)
+            return linear_symplectic_solve(A_dyn, x0, time, dt=dt)
 
-        # Test whether training diverges because of integrator. 
-        X = solve_ivp(
-            fun=lambda t, x: self.evaluate_rom_rhs(x),
-            t_span=(time[0], time[-1]),
-            y0=x0,
+        X = symplectic_solve(
+            rhs=self.evaluate_rom_rhs,
+            jacobian=self.evaluate_rom_rhs_jacobian,
+            z0=x0,
             t_eval=time,
-            method="Radau",
-        ).y
+            dt=dt,
+        )
+
+        # # Test whether training diverges because of integrator. 
+        # X = solve_ivp(
+        #     fun=lambda t, x: self.evaluate_rom_rhs(x),
+        #     t_span=(time[0], time[-1]),
+        #     y0=x0,
+        #     t_eval=time,
+        #     method="Radau",
+        # ).y
 
         return X
         
@@ -642,7 +779,7 @@ class HamiltonianROM(BaseROM):
             r"""
             Evaluate the polynomial Hamiltonian at state x:
             .. math::
-                H(x) = x^\top A_2 x + x^\top A_3 : x x^\top + \ldots
+                H(x) = 1/2 x^\top A_2 x + 1/3 x^\top A_3 : x x^\top + \ldots
             """
 
             poly_comp = self.poly_comp
@@ -651,7 +788,7 @@ class HamiltonianROM(BaseROM):
             H = 0.0
 
             for i, k in enumerate(poly_comp):
-                term = np.einsum(",".join(einsum_ss[i]), operators[i], *([x] * k))
+                term = np.einsum(",".join(einsum_ss[i]), operators[i], *([x] * k))/k
                 H += np.dot(x, term)
                 # aggiungere torch.autograd
             return H
@@ -901,19 +1038,74 @@ class HamiltonianReductionObjective(BaseReductionObjective):
         self.r = self.D.shape[1]
         self.n = self.D.shape[0]
 
+    # ── Linear fast path (poly_comp == [1]) ─────────────────────────────────
+    # A quadratic Hamiltonian has LINEAR dynamics  z' = A z,  A = Jhat (A2+A2^T)
+    # constant within one cost/gradient call, so the symplectic march is a
+    # constant matrix: states (and adjoints) anywhere are obtained with
+    # precomputed propagators instead of sub-stepping at dt_rom (forward) and
+    # RK45 (adjoint). Over one snapshot interval of length ``gap``:
+    #
+    #   z(t + gap)  = M_gap @ z(t)          M_gap = linear_propagator(A, gap)
+    #   z(t + d_i)  = N_i   @ z(t)          d_i   = Gauss-node offsets from t
+    #   lam(t)      = M_gap.T @ lam(t+gap)  adjoint lam' = -A^T lam: the Cayley
+    #   lam(t + d_i)= Q_i.T   @ lam(t+gap)  step commutes with transposition,
+    #                                       so the discrete backward-adjoint map
+    #                                       is exactly the forward map transposed
+    #                                       (Q_i propagates node i -> interval end).
+    # Same discrete trajectory as the step-by-step march (products of the same
+    # Cayley factors), so nothing changes numerically -- it only removes the
+    # per-step Python loop, the spline at the Gauss nodes, and the RK45 adjoint.
+
+    def _use_linear_fast_path(self):
+        return list(self.rom.poly_comp) == [1]
+
+    def _linear_dynamics(self):
+        """Constant reduced dynamics A = Jhat (A2 + A2^T) of the quadratic H."""
+        A2 = self.rom.operators[0]
+        return np.asarray(self.Jhat) @ (A2 + A2.T)
+
+    def _march_snapshots(self, A, z0):
+        """Snapshot states Z[:, k] = z(t_k) by one compounded propagator per gap
+        (one propagator total on a uniform grid; cached per distinct gap)."""
+        time = self.opt_obj.time
+        dt = self.opt_obj.dt_rom
+        Z = np.empty((self.r, len(time)))
+        Z[:, 0] = z0
+        maps = {}
+        for k in range(1, len(time)):
+            gap = float(time[k] - time[k - 1])
+            key = round(gap, 15)
+            if key not in maps:
+                maps[key] = linear_propagator(A, gap, dt)
+            Z[:, k] = maps[key] @ Z[:, k - 1]
+        return Z
+
+    def _interval_maps(self, A, gap):
+        """(M_gap, N, Q) for one snapshot interval: full-gap propagator, and the
+        node propagators N_i (t -> node i) and Q_i (node i -> t + gap) at the
+        Gauss-Legendre nodes d_i = gap (tlg_i + 1) / 2."""
+        dt = self.opt_obj.dt_rom
+        M_gap = linear_propagator(A, gap, dt)
+        offsets = 0.5 * gap * (self.tlg + 1.0)
+        N = [linear_propagator(A, d, dt) for d in offsets]
+        Q = [linear_propagator(A, gap - d, dt) for d in offsets]
+        return M_gap, N, Q
+
     def trajectory_cost(self, traj_idx):
         Xk = self.opt_obj.X[traj_idx]
         z0 = self.rom.encode(Xk[:, 0])
-        t_int = time_module.perf_counter()
-        Z = self.rom.integrate(self.opt_obj.time, z0, dt=self.opt_obj.dt_rom)
+        if self._use_linear_fast_path():
+            Z = self._march_snapshots(self._linear_dynamics(), z0)
+        else:
+            Z = self.rom.integrate(self.opt_obj.time, z0, dt=self.opt_obj.dt_rom)
         error = Xk - self.rom.reconstruct(Z)
         alpha  =  self.opt_obj.weights[traj_idx]
         cost = float((1.0 / alpha) * np.trace(error.T @ error))
 
         # NO SCALING BY NUMBER OF SNAPSHOTS OR TRAJECTORIES!!!!!!!!!!!!
         # WEIGHTS SHOULD SCALE ACCORDING TO THE ENERGY CONTENT OF THE TRAJECTORY
-        # SO ALPHA SHOULD NOT BE ENOUGH. 
-    
+        # SO ALPHA SHOULD NOT BE ENOUGH.
+
         return cost
 
     def trajectory_gradient(self, traj_idx):
@@ -925,7 +1117,13 @@ class HamiltonianReductionObjective(BaseReductionObjective):
 
         # print("Weights cost function", alpha)
 
-        Z = self.rom.integrate(self.opt_obj.time, z0, dt=self.opt_obj.dt_rom)
+        linear = self._use_linear_fast_path()
+        if linear:
+            A_lin = self._linear_dynamics()
+            interval_maps = {}          # gap -> (M_gap, N, Q); one entry on a uniform grid
+            Z = self._march_snapshots(A_lin, z0)
+        else:
+            Z = self.rom.integrate(self.opt_obj.time, z0, dt=self.opt_obj.dt_rom)
         E = Xk - self.rom.reconstruct(Z)
 
         grad_Phi = np.zeros_like(self.rom.Phi)
@@ -933,20 +1131,26 @@ class HamiltonianReductionObjective(BaseReductionObjective):
         grad_tensors = [np.zeros_like(op) for op in self.rom.operators]
         lam_j_0 = np.zeros(self.r)
 
-        grad_static  = np.zeros_like(self.rom.Phi)
         grad_dynamic = np.zeros_like(self.rom.Phi)
         grad_terminal= np.zeros_like(self.rom.Phi)
-        
-        for k in range(self.opt_obj.n_snapshots):
-            zk       = Z[:, k]
-            ek       = E[:, k]
-            Dzk      = self.D @ zk
-            M_inv_zk = self.M_inv @ zk
-            DTek     = self.D.T @ ek
-            term1    = np.outer(ek, M_inv_zk)
-            term2    = np.outer(self.J.T @ Dzk, DTek)
-            term3    = np.outer(self.JU @ DTek, M_inv_zk)
-            grad_static += -(2 / alpha) * (term1 - term2 - term3)
+
+        # Static term, vectorized over snapshots: sum_k outer(a_k, b_k) = A B^T
+        # with a_k / b_k as columns. Same sums as the per-snapshot outer-product
+        # loop, but as three thin (n x ns)(ns x r) matmuls -- the loop version
+        # allocates an (n x r) outer product per snapshot, which dominates the
+        # gradient at full FOM dimension (n ~ 1e4+).
+        MZ    = self.M_inv @ Z                                   # (r, ns)
+        DTE   = self.D.T @ E                                     # (r, ns)
+        term1 = E @ MZ.T
+        term2 = np.asarray(self.J.T @ (self.D @ Z)) @ DTE.T
+        term3 = (self.JU @ DTE) @ MZ.T
+        grad_static = -(2 / alpha) * (term1 - term2 - term3)
+
+        # Dynamic term: the Gauss-node loop below only accumulates the r x r
+        # quadrature sum  S1 = sum_j,i  w_i * outer(lam_i, grad H(z_i)); the
+        # expensive (n x r) products J^T U S1 + J U S1^T are applied ONCE after
+        # the loop (note sum_i outer(g_i, l_i) = S1^T).
+        S1 = np.zeros((self.r, self.r))
 
         for j in range(self.opt_obj.n_snapshots - 1):
             id1 = self.opt_obj.n_snapshots - 1 - j
@@ -957,34 +1161,47 @@ class HamiltonianReductionObjective(BaseReductionObjective):
             tf_j = self.opt_obj.time[id1]
             t0_j = self.opt_obj.time[id0]
             z0_j = Z[:, id0]
-            time_rom_j = np.linspace(t0_j, tf_j, num=self.opt_obj.nsave_rom, endpoint=True) # forward time integration grid
-            Z_j = self.rom.integrate(time_rom_j, z0_j, dt=self.opt_obj.dt_rom)
-            
-            fZ = interp1d(time_rom_j, Z_j, kind='linear', fill_value='extrapolate')
-            
-            lam_j_0 += (2 / alpha) * self.D.T @ ej
+            a = (tf_j - t0_j) / 2                     # Gauss-Legendre half-width
 
-            sol_lam = solve_ivp(
-                self.rom.evaluate_rom_adjoint,
-                [tf_j, t0_j],
-                lam_j_0,
-                method='RK45',
-                t_eval=time_rom_j[::-1],
-                args=(fZ,) + tuple(self.rom.operators),
-            )
+            lam_j_0 += (2 / alpha) * self.D.T @ ej    # cost injection at t = tf_j
 
-            Lam = np.fliplr(sol_lam.y)
-            lam_j_0 = Lam[:, 0]
+            if linear:
+                # States and adjoints at the Gauss nodes by EXACT propagation
+                # (see the fast-path note above); lam_j_0 enters as lam(tf_j)
+                # and leaves as lam(t0_j). No sub-stepping, spline, or RK45.
+                gap = float(tf_j - t0_j)
+                key = round(gap, 15)
+                if key not in interval_maps:
+                    interval_maps[key] = self._interval_maps(A_lin, gap)
+                M_gap, N, Q = interval_maps[key]
+                Z_j_lg = np.column_stack([Ni @ z0_j for Ni in N])
+                Lam_lg = np.column_stack([Qi.T @ lam_j_0 for Qi in Q])
+                lam_j_0 = M_gap.T @ lam_j_0
+            else:
+                time_rom_j = np.linspace(t0_j, tf_j, num=self.opt_obj.nsave_rom, endpoint=True) # forward time integration grid
+                Z_j = self.rom.integrate(time_rom_j, z0_j, dt=self.opt_obj.dt_rom)
 
-            a = (tf_j - t0_j) / 2
-            b = (tf_j + t0_j) / 2
-            time_j_lg = a * self.tlg + b
+                fZ = interp1d(time_rom_j, Z_j, kind='cubic', fill_value='extrapolate')
 
-            fL = interp1d(time_rom_j, Lam, kind='linear', fill_value='extrapolate')
+                sol_lam = solve_ivp(
+                    self.rom.evaluate_rom_adjoint,
+                    [tf_j, t0_j],
+                    lam_j_0,
+                    method='RK45',
+                    t_eval=time_rom_j[::-1],
+                    args=(fZ,) + tuple(self.rom.operators),
+                )
 
-            Z_j_lg = fZ(time_j_lg)
-            Lam_lg = fL(time_j_lg)
-            
+                Lam = np.fliplr(sol_lam.y)
+                lam_j_0 = Lam[:, 0]
+
+                time_j_lg = a * self.tlg + (tf_j + t0_j) / 2
+
+                fL = interp1d(time_rom_j, Lam, kind='cubic', fill_value='extrapolate')
+
+                Z_j_lg = fZ(time_j_lg)
+                Lam_lg = fL(time_j_lg)
+
             for i in range(self.opt_obj.leggauss_deg):
 
                 zi        = Z_j_lg[:, i] # Re-define z inside leggaus? YES!
@@ -992,14 +1209,16 @@ class HamiltonianReductionObjective(BaseReductionObjective):
                 weight    = a * self.wlg[i]
                 nabla_H_j = self.rom.compute_hamiltonian_gradient(zi)
 
-                grad_dynamic +=  - weight * (self.J.T @ self.U @ np.outer(li, nabla_H_j) 
-                                             + self.J  @ self.U @ np.outer(nabla_H_j, li))
-                
+                S1 += weight * np.outer(li, nabla_H_j)   # r x r; applied after the loop
+
 
                 if 1 in self.opt_obj.poly_comp:
                     idx_A2 = self.opt_obj.poly_comp.index(1)
-                    grad_tensors[idx_A2] +=  -2 * weight * (
-                       (np.outer(self.Jhat.T @ li, zi) 
+                    # The bracket below is already the full two-term A2 gradient
+                    # (it accounts for the A2 + A2^T symmetry in grad H), so the
+                    # prefactor is -1, not -2 (the 2 double-counted -> grad was 2x).
+                    grad_tensors[idx_A2] +=  -1 * weight * (
+                       (np.outer(self.Jhat.T @ li, zi)
                         + np.outer(zi, li) @ self.Jhat))
 
                 if 2 in self.opt_obj.poly_comp:
@@ -1011,6 +1230,11 @@ class HamiltonianReductionObjective(BaseReductionObjective):
                         + np.einsum('i,j,k->ijk', zj, zj, JhatT_lambda)
                     )
 
+
+        # Apply the accumulated quadrature sum (see S1 note above): two thin
+        # (n x r)(r x r) products + sparse-J matmuls, once per trajectory.
+        grad_dynamic = -(np.asarray(self.J.T @ (self.U @ S1))
+                         + np.asarray(self.J @ (self.U @ S1.T)))
 
         lam_j_0 += (2 / alpha) * self.D.T @ E[:, 0]
         # grad_terminal += -(1 / alpha) * np.outer(self.J.T @ Xk[:, 0], lam_j_0)

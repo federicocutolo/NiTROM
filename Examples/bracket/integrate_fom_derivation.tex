@@ -1,0 +1,151 @@
+% Sparse Cayley (implicit midpoint) step for the linear Hamiltonian FOM.
+% Requires: \usepackage{amsmath}  (and optionally amssymb).
+% Matches the implementation in integrate_fom.py.
+
+\section{Symplectic integration of the full-order model}
+
+\subsection{Setup}
+
+The full-order model is the linear Hamiltonian system
+\begin{equation}
+  \dot{x} = J A x,
+  \qquad
+  x = \begin{bmatrix} q \\ p \end{bmatrix},
+  \qquad
+  J = \begin{bmatrix} 0 & I \\ -I & 0 \end{bmatrix},
+  \qquad
+  A = \begin{bmatrix} K & 0 \\ 0 & M^{-1} \end{bmatrix},
+\end{equation}
+with $M, K \in \mathbb{R}^{n \times n}$ the (sparse, symmetric positive
+definite) finite-element mass and stiffness matrices, $q$ the nodal
+displacements and $p = M\dot q$ the momenta. The Hamiltonian is
+\begin{equation}
+  H(x) = \tfrac{1}{2} x^{\top} A\, x
+       = \tfrac{1}{2} q^{\top} K q + \tfrac{1}{2} p^{\top} M^{-1} p .
+\end{equation}
+In block form the dynamics $S = JA$ read
+\begin{equation}
+  \begin{bmatrix} \dot q \\ \dot p \end{bmatrix}
+  =
+  \begin{bmatrix} 0 & M^{-1} \\ -K & 0 \end{bmatrix}
+  \begin{bmatrix} q \\ p \end{bmatrix},
+  \qquad\text{i.e.}\qquad
+  \dot q = M^{-1} p, \quad \dot p = -K q .
+  \label{eq:blockdyn}
+\end{equation}
+Note that $M$ is a \emph{consistent} mass matrix, so $M^{-1}$ is dense:
+any scheme that assembles $A$ or $S$ explicitly destroys sparsity. The goal
+is a symplectic step that only ever touches $M$ and $K$.
+
+\subsection{The implicit midpoint step is a Cayley transform}
+
+The implicit midpoint rule applied to $\dot x = S x$ with step $h$,
+\begin{equation}
+  x_{n+1} = x_n + h\, S\, \frac{x_n + x_{n+1}}{2},
+\end{equation}
+is linear in $x_{n+1}$ and can be solved exactly (no Newton iteration):
+\begin{equation}
+  \Bigl(I - \tfrac{h}{2} S\Bigr) x_{n+1}
+  = \Bigl(I + \tfrac{h}{2} S\Bigr) x_n
+  \quad\Longleftrightarrow\quad
+  x_{n+1} = \mathcal{C}(h)\, x_n,
+  \qquad
+  \mathcal{C}(h) = \Bigl(I - \tfrac{h}{2} S\Bigr)^{-1}
+                   \Bigl(I + \tfrac{h}{2} S\Bigr).
+  \label{eq:cayley}
+\end{equation}
+$\mathcal{C}(h)$ is the Cayley transform of $S$. Since $S = JA$ is a
+Hamiltonian matrix, $\mathcal{C}(h)$ is symplectic for \emph{every} $h$,
+and because $H$ is quadratic the step conserves it exactly:
+$H(x_{n+1}) = H(x_n)$ in exact arithmetic, for any step size.
+
+\subsection{Elimination to a sparse SPD Schur system}
+
+Written in the blocks of \eqref{eq:blockdyn}, the linear system
+\eqref{eq:cayley} is
+\begin{align}
+  q_{n+1} - \tfrac{h}{2} M^{-1} p_{n+1}
+    &= q_n + \tfrac{h}{2} M^{-1} p_n ,
+  \label{eq:row1}\\
+  p_{n+1} + \tfrac{h}{2} K q_{n+1}
+    &= p_n - \tfrac{h}{2} K q_n .
+  \label{eq:row2}
+\end{align}
+Multiplying \eqref{eq:row1} by $M$ removes every occurrence of $M^{-1}$:
+\begin{equation}
+  M q_{n+1} - \tfrac{h}{2} p_{n+1}
+  = M q_n + \tfrac{h}{2} p_n .
+  \label{eq:row1M}
+\end{equation}
+Solving \eqref{eq:row2} for the new momentum,
+\begin{equation}
+  p_{n+1} = p_n - \tfrac{h}{2} K \bigl( q_n + q_{n+1} \bigr),
+  \label{eq:pupdate}
+\end{equation}
+and substituting into \eqref{eq:row1M} yields a single $n \times n$ system
+for $q_{n+1}$ alone (the Schur complement of the $2n \times 2n$ Cayley
+system):
+\begin{equation}
+  \boxed{\;
+  \Bigl(M + \tfrac{h^2}{4} K\Bigr) q_{n+1}
+  = M q_n + h\, p_n - \tfrac{h^2}{4} K q_n ,
+  \qquad
+  p_{n+1} = p_n - \tfrac{h}{2} K \bigl( q_n + q_{n+1} \bigr).
+  \;}
+  \label{eq:schur}
+\end{equation}
+This is algebraically \emph{identical} to \eqref{eq:cayley} --- the same
+map, hence symplectic and exactly energy-conserving --- but it involves
+only the sparse operators $M$ and $K$. The Schur matrix
+$M + \tfrac{h^2}{4}K$ is symmetric positive definite for any $h$
+(including $h<0$, as needed below), and it is \emph{constant}, so it is
+factorized once and reused for every step.
+
+\subsection{Cost per step}
+
+With the factorization of $M + \tfrac{h^2}{4}K$ precomputed, and observing
+that $K q_{n+1}$ computed in \eqref{eq:pupdate} is exactly the $K q_n$ of
+the following step, one step of \eqref{eq:schur} costs
+\begin{itemize}
+  \item one sparse triangular back-substitution (the Schur solve),
+  \item one sparse mat--vec with $K$,
+  \item one sparse mat--vec with $M$,
+\end{itemize}
+i.e.\ $\mathcal{O}(\mathrm{nnz})$ work per step, with $M^{-1}$ never formed.
+The stored derivatives are the exact rates on the discrete trajectory,
+\begin{equation}
+  \dot q_n = M^{-1} p_n
+  \quad\text{(one solve with prefactored } M \text{, at sampling times only)},
+  \qquad
+  \dot p_n = -K q_n
+  \quad\text{(mat--vec already available)}.
+\end{equation}
+
+\subsection{Fourth order: Yoshida composition}
+
+The midpoint step \eqref{eq:schur} is second order. A fourth-order
+symplectic step is obtained by Yoshida's triple jump, composing three
+Cayley steps with coefficients
+\begin{equation}
+  \Phi_h^{(4)}
+  = \mathcal{C}(\gamma_1 h)\,\circ\,\mathcal{C}(\gamma_2 h)\,\circ\,
+    \mathcal{C}(\gamma_1 h),
+  \qquad
+  \gamma_1 = \frac{1}{2 - 2^{1/3}},
+  \qquad
+  \gamma_2 = -\frac{2^{1/3}}{2 - 2^{1/3}} .
+\end{equation}
+Only two distinct Schur matrices appear,
+$M + \tfrac{(\gamma_1 h)^2}{4} K$ and $M + \tfrac{(\gamma_2 h)^2}{4} K$
+(both SPD; the sign of $\gamma_2$ is irrelevant since $h$ enters squared),
+each factorized once; the composition costs three substeps of the form
+\eqref{eq:schur} per step.
+
+\subsection{Sampling without interpolation}
+
+The internal step is chosen commensurate with the output sampling interval,
+$\Delta t_{\mathrm{s}} = n_{\mathrm{sub}}\, h$ with
+$n_{\mathrm{sub}} \in \mathbb{N}$, so every stored sample is a state of the
+discrete symplectic trajectory itself --- no interpolation is involved, and
+the exact conservation $H(x_k) \equiv H(x_0)$ holds at every stored column
+up to round-off.

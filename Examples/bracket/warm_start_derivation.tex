@@ -1,0 +1,170 @@
+% Reduced coordinates, warm starts, and the canonical-Jhat pitfall.
+% Paste into any document that loads amsmath. Matches plate_roms.py:
+%   opinf_dynamics / opinf_init_A2  (basis-general, shown exact below)
+%   pg_dynamics / pg_init_A2        (canonical-Jhat shortcut, wrong for POD)
+
+\section{Reduced coordinates and warm starts for a general basis}
+
+\subsection{Setup}
+
+Full-order model and reduced basis:
+\begin{equation}
+  \dot{x} = J A x, \qquad x \in \mathbb{R}^{2N}, \qquad
+  \Phi \in \mathbb{R}^{2N \times r}, \qquad
+  \hat{J} := \Phi^{\top} J \Phi \in \mathbb{R}^{r \times r},
+\end{equation}
+with $J$ the canonical symplectic matrix ($J^{\top} = -J$, $J^{\top}J = I$) and
+$A = A^{\top}$ the Hamiltonian operator, $H(x) = \tfrac12 x^{\top} A x$.
+The reduced structure matrix $\hat{J}$ is always skew
+($\hat{J}^{\top} = -\hat{J}$); we assume it invertible. Two special cases:
+\begin{itemize}
+  \item \textbf{Cotangent-lift basis} $\Phi_{\mathrm{cl}}$:
+        $\hat{J}$ is \emph{canonical}, i.e.
+        $\hat{J}^2 = -I$, so $\hat{J}^{-1} = -\hat{J}$ and
+        $\hat{J}^{-\top} = \hat{J}$, and $\kappa(\hat J) = 1$.
+  \item \textbf{POD basis} $\Phi_{\mathrm{pod}}$: $\hat{J}$ is skew but
+        \emph{not} canonical ($\hat{J}^2 \neq -I$). Measured on the bracket
+        data: $\|\hat J^2 + I\| \approx 3.5$ and
+        $\kappa(\hat J) \approx 5.6 \times 10^{3}$.
+\end{itemize}
+
+Two reduced coordinate systems appear:
+\begin{align}
+  \text{Galerkin (OpInf):}\quad
+    & z_{\mathrm{g}} = \Phi^{\top} x, \qquad x \approx \Phi z_{\mathrm{g}} ,\\
+  \text{symplectic Petrov--Galerkin (NiTROM):}\quad
+    & z = E x, \quad x \approx D z, \qquad
+      E = (J\Phi)^{\top}, \quad D = -\Phi \hat{J}^{-1} .
+\end{align}
+The PG pair is a consistent projection for any invertible $\hat J$:
+\begin{equation}
+  E D = -(J\Phi)^{\top} \Phi \hat{J}^{-1}
+      = -\bigl(\Phi^{\top} J^{\top} \Phi\bigr) \hat{J}^{-1}
+      = \hat{J} \hat{J}^{-1} = I .
+\end{equation}
+On the range of $\Phi$ the two coordinates are related by
+\begin{equation}
+  z = E\, \Phi z_{\mathrm{g}} = \Phi^{\top} J^{\top} \Phi \, z_{\mathrm{g}}
+    = -\hat{J} z_{\mathrm{g}}
+  \qquad\Longleftrightarrow\qquad
+  z_{\mathrm{g}} = -\hat{J}^{-1} z .
+  \label{eq:cov}
+\end{equation}
+
+\subsection{A conservation criterion}
+
+For linear reduced dynamics $\dot z = \mathcal{A} z$, a quadratic form
+$H_r(z) = \tfrac12 z^{\top} W z$ (with $W = W^{\top}$) is conserved iff
+\begin{equation}
+  \frac{d}{dt} H_r = z^{\top} W \mathcal{A}\, z = 0 \;\;\forall z
+  \qquad\Longleftrightarrow\qquad
+  W\mathcal{A} + (W\mathcal{A})^{\top} = 0 .
+  \label{eq:crit}
+\end{equation}
+
+\subsection{VC-H-OpInf: exact in any basis}
+
+OpInf learns a symmetric $\bar{A} = \bar{A}^{\top}$ and evolves the Galerkin
+coordinates as
+\begin{equation}
+  \dot z_{\mathrm{g}} = \hat{J}^{-\top} \bar{A}\, z_{\mathrm{g}} .
+  \label{eq:opinf}
+\end{equation}
+This conserves $\tfrac12 z_{\mathrm{g}}^{\top} \bar{A} z_{\mathrm{g}}$ for
+\emph{any} skew invertible $\hat J$, by criterion \eqref{eq:crit}:
+\begin{equation}
+  \bigl(\bar{A}\,\hat{J}^{-\top}\bar{A}\bigr)^{\top}
+  = \bar{A}\,\hat{J}^{-1}\bar{A}
+  = -\bar{A}\,\hat{J}^{-\top}\bar{A} .
+\end{equation}
+
+\paragraph{Warm start.}
+NiTROM parameterizes its dynamics (in the PG coordinates $z$) as
+\begin{equation}
+  \dot z = \hat{J}\,(A_2 + A_2^{\top})\, z .
+  \label{eq:nitromdyn}
+\end{equation}
+Transforming \eqref{eq:opinf} through the change of variables \eqref{eq:cov}:
+\begin{equation}
+  \dot z = -\hat{J}\,\dot z_{\mathrm{g}}
+         = -\hat{J}\,\hat{J}^{-\top} \bar{A}\, z_{\mathrm{g}}
+         = -\hat{J}\,\hat{J}^{-\top} \bar{A}\,\bigl(-\hat{J}^{-1} z\bigr)
+         = \hat{J}\,\hat{J}^{-\top} \bar{A}\, \hat{J}^{-1}\, z .
+  \label{eq:opinf_in_z}
+\end{equation}
+Choosing the seed
+\begin{equation}
+  \boxed{\;A_2 = \tfrac12\, \hat{J}^{-\top} \bar{A}\, \hat{J}^{-1}\;}
+  \qquad\text{(symmetric, since }
+  (\hat{J}^{-\top}\bar{A}\hat{J}^{-1})^{\top}
+   = \hat{J}^{-\top}\bar{A}\hat{J}^{-1}\text{)}
+\end{equation}
+gives $A_2 + A_2^{\top} = \hat{J}^{-\top}\bar{A}\hat{J}^{-1}$, so
+\eqref{eq:nitromdyn} reproduces \eqref{eq:opinf_in_z} \emph{exactly} --- no
+canonical assumption anywhere. The conserved energies match as well:
+\begin{equation}
+  \tfrac12 z^{\top} (A_2 + A_2^{\top})\, z
+  = \tfrac12 z^{\top} \hat{J}^{-\top}\bar{A}\,\hat{J}^{-1} z
+  = \tfrac12 z_{\mathrm{g}}^{\top} \bar{A}\, z_{\mathrm{g}} .
+\end{equation}
+In the canonical case ($\hat{J}^{-\top} = \hat{J}$, $\hat{J}^{-1} = -\hat{J}$,
+$\hat J^2 = -I$) the seed reduces to $A_2 = \tfrac12 \bar A$ up to the
+$\hat J$-conjugation, and \eqref{eq:opinf_in_z} to the familiar forms. Hence:
+the OpInf initialization \emph{is} well defined for the POD basis; the label
+``NiTROM-OpInf'' in the plots denotes the \emph{trained} NiTROM whose
+optimization \emph{started} from this seed, not the OpInf model itself.
+
+\subsection{Petrov--Galerkin: where the canonical shortcut fails}
+
+The reduction of the FOM consistent with the pair $(E, D)$ is
+\begin{equation}
+  \dot z = E\,(J A)\, D\, z
+  = -(J\Phi)^{\top} J A\, \Phi \hat{J}^{-1} z
+  = -\Phi^{\top} \underbrace{J^{\top} J}_{=\,I} A\, \Phi\, \hat{J}^{-1} z
+  = -\hat{W} \hat{J}^{-1} z ,
+  \qquad \hat{W} := \Phi^{\top} A \Phi ,
+  \label{eq:pg_consistent}
+\end{equation}
+and it conserves the projected physical energy
+$W_{\mathrm{pg}} = D^{\top} A D = \hat{J}^{-\top}\hat{W}\hat{J}^{-1}$
+for any skew invertible $\hat J$ (criterion \eqref{eq:crit}; three
+$\hat{J}^{-\top}\!\to -\hat{J}^{-1}$ sign flips make
+$W_{\mathrm{pg}}\mathcal{A}$ skew).
+
+The implemented shortcut
+\begin{equation}
+  \mathcal{A}_{\mathrm{code}} = \hat{W}\hat{J}
+  \qquad\text{equals}\qquad
+  \mathcal{A}_{\mathrm{pg}} = -\hat{W}\hat{J}^{-1}
+  \qquad\text{iff}\quad \hat{J}^{-1} = -\hat{J},
+\end{equation}
+i.e.\ iff $\hat J$ is canonical. True for the cotangent lift; false for POD.
+Measured on the bracket data with $\Phi_{\mathrm{pod}}$:
+$\|\mathcal{A}_{\mathrm{code}} - \mathcal{A}_{\mathrm{pg}}\| /
+ \|\mathcal{A}_{\mathrm{pg}}\| = 0.90$, and the conservation residual
+$\|W_{\mathrm{pg}}\mathcal{A} + (W_{\mathrm{pg}}\mathcal{A})^{\top}\| /
+ \|W_{\mathrm{pg}}\mathcal{A}\|$ is $1.4$ (i.e.\ $O(1)$, not conserved) for
+$\mathcal{A}_{\mathrm{code}}$ versus $10^{-12}$ for
+$\mathcal{A}_{\mathrm{pg}}$. This is the whole story of the $10^{2}$ error
+and $10^{5}$ ``drift'': the integrated operator is not a projection of the
+FOM, and the plotted energy is not one of its invariants. The same shortcut
+affects the warm start: the basis-general form is
+\begin{equation}
+  \hat{J}(A_2 + A_2^{\top}) = -\hat{W}\hat{J}^{-1}
+  \quad\Longrightarrow\quad
+  \boxed{\;A_2 = -\tfrac12\,\hat{J}^{-1}\hat{W}\hat{J}^{-1}\;}
+  \qquad\text{(symmetric, two sign flips)} ,
+\end{equation}
+which reduces to the implemented $\tfrac12 \hat{J}^{-1}\hat{W}\hat{J}$ only
+in the canonical case.
+
+\subsection{Conditioning caveat}
+
+Everything above is exact algebra for any invertible skew $\hat J$; numerics
+scale with $\kappa(\hat J)$. The decoder $D = -\Phi\hat{J}^{-1}$ and the
+sandwiches $\hat{J}^{-\top}(\cdot)\hat{J}^{-1}$ amplify perturbations by up to
+$\kappa(\hat J)$ (resp.\ $\kappa(\hat J)^2$): for the bracket,
+$\kappa(\hat J_{\mathrm{pod}}) \approx 5.6\times 10^{3}$ versus $1$ for the
+cotangent lift. A POD basis therefore yields a \emph{valid} but potentially
+much worse-conditioned Hamiltonian reduction --- fixing the PG projection
+makes the model exactly conservative, not necessarily accurate.

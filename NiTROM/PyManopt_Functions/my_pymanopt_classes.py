@@ -1,3 +1,6 @@
+import math
+
+
 class myAdaptiveLineSearcher:
     """Adaptive line-search algorithm."""
 
@@ -28,7 +31,8 @@ class myAdaptiveLineSearcher:
         cost_evaluations = 1
 
         while (
-            newf > f0 + self._sufficient_decrease * alpha * df0
+            (not math.isfinite(newf)
+             or newf > f0 + self._sufficient_decrease * alpha * df0)
             and cost_evaluations <= self._max_iterations
         ):
             # Reduce the step size.
@@ -51,7 +55,8 @@ class myAdaptiveLineSearcher:
             cost_evaluations = 1
 
             while (
-                newf > 1.01*f0 and cost_evaluations <= self._max_iterations
+                (not math.isfinite(newf) or newf > 1.01 * f0)
+                and cost_evaluations <= self._max_iterations
             ):
                 # Reduce the step size.
                 alpha *= self._contraction_factor
@@ -67,6 +72,15 @@ class myAdaptiveLineSearcher:
         # if newf > f0:
         #     alpha = 0
         #     newx = x
+
+        # A non-finite cost must NEVER be accepted: NaN fails every comparison,
+        # so both backtracking loops above exit immediately on NaN and would
+        # silently adopt it (poisoning all subsequent iterates).
+        if not math.isfinite(newf):
+            print("Attention: non-finite cost at every trial step -> step rejected")
+            alpha = 0.0
+            newx  = x
+            newf  = f0
 
         step_size = alpha * norm_d
 

@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import sys
 import types
@@ -138,54 +139,82 @@ def centered_difference(loss, Phi, delta, eps=1e-5):
     return (loss(Phi + eps * delta) - loss(Phi - eps * delta)) / (2 * eps)
 
 # Build Hamiltonian gradient check
-
 def build_hamiltonian_problem():
-    time = np.linspace(0.0, 1.0, ns)
-    A2 = np.array([[0.8, -0.3], [0.4, 0.6]])
-    A3 = np.array([[[0.5, -0.2], [0.1, 0.3]], 
-                   [[-0.4, 0.2], [0.2, -0.1]]])
+    base     = Path(__file__).resolve().parents[1] / "Examples" / "wave_equation" / "Periodic"
+    data_dir = base / "trajectories"
+    out_dir  = base / "output"
 
-    Phi_data = random_phi(rng, n=n, r=r)
-    Phi_test = random_phi(rng, n=n, r=r)
-    Psi_test = Phi_test.copy()
+    Phi   = np.load(data_dir / "Phi_cl.npy")    
+    r = Phi.shape[1]
+    A2 = 0.5 * (lambda B: B + B.T)(rng.standard_normal((r, r)))   # or vc_h_operator(Phi, ...)
+           # real basis  (2N, r)
+    # A2    = 0.5 * np.load(out_dir  / "A_bar_opinf.npy")             # warm-start operator (r, r)
+    time  = np.load(data_dir / "time.npy")
+    traj  = sorted(data_dir.glob("traj_*.npy"))
+    X_data = np.stack([np.load(f) for f in traj], axis=0)  # (nt, 2N, ns)
 
-    rom_data = classes.HamiltonianROM(operators=[A2, A3], poly_comp=[1], Phi=Phi_data)
-    X0 = rng.standard_normal((nt, n))
-    print("X0 shape:", X0.shape)  # Should be (nt, n)
-    Z0 = np.array([rom_data.encode(x0) for x0 in X0])  # shape (nt, r)
-    Z = []
+    WINDOW = 20                                            # short window = fast; grad consistency is window-independent
+    X_data, time = X_data[:, :, :WINDOW], time[:WINDOW]
 
-    for z0_traj in Z0:
-        z_traj = rom_data.integrate(time, z0_traj)
-        # print("z_traj shape:", z_traj.shape)
-        Z.append(z_traj)
-
-    Z = np.stack(Z, axis=0)
-    print("Z shape:", Z.shape)  # Should be (nt, r, len(time))
-    X_data = rom_data.reconstruct(Z)
-    print("X_data shape:", X_data.shape)  # Should be (n_traj, n, len(time))
     pool = DummyPool(X_data, time)
-
     opt_obj = classes.optimization_objects(
-        pool,
-        which_trajs=np.arange(X_data.shape[0]),
+        pool, which_trajs=np.arange(X_data.shape[0]),
         which_times=np.arange(len(time)),
-        leggauss_deg=3,
-        nsave_rom=4,
-        poly_comp=[1],
-        hamiltonian=True,
-    )
+        leggauss_deg=5, nsave_rom=5, poly_comp=[1],        # poly_comp=[1] -> only A2, NO A3
+        hamiltonian=True, dt_rom=1e-4)
 
-    fom = IdentityFOM()
+    fom   = IdentityFOM()                                  # Hamiltonian objective ignores fom anyway
+    delta = rng.standard_normal(Phi.shape); delta /= np.linalg.norm(delta)
+    return opt_obj, pool, fom, Phi, Phi, Phi, (A2,), delta, X_data, time
 
-    delta = rng.standard_normal(Phi_test.shape)
-    delta /= np.linalg.norm(delta)
-    # print("delta", delta)
+# def build_hamiltonian_problem():
+#     time = np.linspace(0.0, 1.0, ns)
+#     A2 = np.array([[0.8, -0.3], [0.4, 0.6]])
+#     A3 = np.array([[[0.5, -0.2], [0.1, 0.3]], 
+#                    [[-0.4, 0.2], [0.2, -0.1]]])
 
-    return opt_obj, pool, fom, Phi_data, Phi_test, Psi_test, (A2, A3), delta, X_data, time
+#     Phi_data = random_phi(rng, n=n, r=r)
+#     Phi_test = random_phi(rng, n=n, r=r)
+#     Psi_test = Phi_test.copy()
+
+#     rom_data = classes.HamiltonianROM(operators=[A2, A3], poly_comp=[1], Phi=Phi_data)
+#     X0 = rng.standard_normal((nt, n))
+#     print("X0 shape:", X0.shape)  # Should be (nt, n)
+#     Z0 = np.array([rom_data.encode(x0) for x0 in X0])  # shape (nt, r)
+#     Z = []
+
+#     for z0_traj in Z0:
+#         z_traj = rom_data.integrate(time, z0_traj)
+#         # print("z_traj shape:", z_traj.shape)
+#         Z.append(z_traj)
+
+#     Z = np.stack(Z, axis=0)
+#     print("Z shape:", Z.shape)  # Should be (nt, r, len(time))
+#     X_data = rom_data.reconstruct(Z)
+#     print("X_data shape:", X_data.shape)  # Should be (n_traj, n, len(time))
+#     pool = DummyPool(X_data, time)
+
+#     opt_obj = classes.optimization_objects(
+#         pool,
+#         which_trajs=np.arange(X_data.shape[0]),
+#         which_times=np.arange(len(time)),
+#         leggauss_deg=3,
+#         nsave_rom=4,
+#         poly_comp=[1],
+#         hamiltonian=True,
+#     )
+
+#     fom = IdentityFOM()
+
+#     delta = rng.standard_normal(Phi_test.shape)
+#     delta /= np.linalg.norm(delta)
+#     # print("delta", delta)
+
+#     return opt_obj, pool, fom, Phi_data, Phi_test, Psi_test, (A2, A3), delta, X_data, time
 
 opt_obj, pool, fom, Phi_data, Phi_test, Psi_test, tensors, delta, X_data, time = build_hamiltonian_problem()
 
+n, r = Phi_test.shape
 print("Active weights:", opt_obj.weights)
 rom = opt_obj.build_rom(Phi_test, None, operators=tensors)
 objective = opt_obj.build_objective(rom, fom, pool)
@@ -310,14 +339,14 @@ delta_A2 = rng.standard_normal((r, r))
 delta_A2 /= np.linalg.norm(delta_A2)
 
 def centered_difference_A2(loss, A2, delta, eps=1e-5):
-    A2, A3 = tensors
+    A2 = tensors[0]
     # Centered difference for *A2* 
     return (loss(A2 + eps * delta) - loss(A2 - eps * delta)) / (2 * eps)
 
 
 def cost_A2(A2_, opt_obj, tensors, Z_ref=Z_ref, lam=lam):
-    A2, A3 = tensors
-    rom = opt_obj.build_rom(Phi_test, None, operators=(A2_, A3))
+    A2 = tensors[0]
+    rom = opt_obj.build_rom(Phi_test, None, operators=(A2_, ))
     Jhat = rom.build_projection_operators()["Jhat"]
     total = 0.0
     for traj in range(opt_obj.my_n_traj):
@@ -377,33 +406,33 @@ def cost_A3(A3_, opt_obj, tensors, Z_ref=Z_ref, lam=lam):
             total += lam.T @ Jhat @ result
     return total
 
-fd_A3 = centered_difference_A3(
-    lambda A3_: cost_A3(A3_, opt_obj, tensors, Z_ref, lam),
-    tensors[1],
-    delta_A3,
-)
+# fd_A3 = centered_difference_A3(
+#     lambda A3_: cost_A3(A3_, opt_obj, tensors, Z_ref, lam),
+#     tensors[1],
+#     delta_A3,
+# )
 
 
-def analytical_grad_A3(Phi_, opt_obj, tensors, Z_ref, lam):
-    rom = opt_obj.build_rom(Phi_, None, operators=tensors)
-    Jhat = rom.build_projection_operators()["Jhat"]
-    total = np.zeros_like(tensors[1])          
-    lam_Jhat = Jhat.T @ lam                    # J^T λ, shape (r,)  [= (Jhat^T λ)]
-    for traj in range(opt_obj.my_n_traj):
-        for snap in range(opt_obj.n_snapshots):
-            z = Z_ref[traj, :, snap]
-            total += (np.einsum('i,j,k->ijk', lam_Jhat, z, z)  
-                    + np.einsum('i,j,k->ijk', z, lam_Jhat, z)
-                    + np.einsum('i,j,k->ijk', z, z, lam_Jhat)
-                    )
-    return total
+# def analytical_grad_A3(Phi_, opt_obj, tensors, Z_ref, lam):
+#     rom = opt_obj.build_rom(Phi_, None, operators=tensors)
+#     Jhat = rom.build_projection_operators()["Jhat"]
+#     total = np.zeros_like(tensors[1])          
+#     lam_Jhat = Jhat.T @ lam                    # J^T λ, shape (r,)  [= (Jhat^T λ)]
+#     for traj in range(opt_obj.my_n_traj):
+#         for snap in range(opt_obj.n_snapshots):
+#             z = Z_ref[traj, :, snap]
+#             total += (np.einsum('i,j,k->ijk', lam_Jhat, z, z)  
+#                     + np.einsum('i,j,k->ijk', z, lam_Jhat, z)
+#                     + np.einsum('i,j,k->ijk', z, z, lam_Jhat)
+#                     )
+#     return total
 
 
-grad_dynamic_A3     = analytical_grad_A3(Phi_test, opt_obj, tensors, Z_ref, lam)
-analytic_dynamic_A3 = np.sum(grad_dynamic_A3 * delta_A3)
-rel_err_dynamic_A3  = abs(fd_A3 - analytic_dynamic_A3) / max(abs(fd_A3), 1e-14)
+# grad_dynamic_A3     = analytical_grad_A3(Phi_test, opt_obj, tensors, Z_ref, lam)
+# analytic_dynamic_A3 = np.sum(grad_dynamic_A3 * delta_A3)
+# rel_err_dynamic_A3  = abs(fd_A3 - analytic_dynamic_A3) / max(abs(fd_A3), 1e-14)
 
-print("\n#---- Dynamic check for A3 ----#")
-print(f"FD dynamic A3       : {fd_A3:.10f}")
-print(f"analytic dynamic A3 : {analytic_dynamic_A3:.10f}")
-print(f"rel err dynamic A3  : {rel_err_dynamic_A3:.2e}")
+# print("\n#---- Dynamic check for A3 ----#")
+# print(f"FD dynamic A3       : {fd_A3:.10f}")
+# print(f"analytic dynamic A3 : {analytic_dynamic_A3:.10f}")
+# print(f"rel err dynamic A3  : {rel_err_dynamic_A3:.2e}")
