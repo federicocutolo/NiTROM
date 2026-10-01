@@ -182,3 +182,4 @@ cython_debug/
 docs/auto_examples/
 docs/sg_execution_times.rst
 !docs/_static/**
+*.code-workspace
