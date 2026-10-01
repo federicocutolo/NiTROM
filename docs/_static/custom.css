@@ -1,0 +1,16 @@
+/* NiTROM documentation overrides */
+
+/* Let inheritance-diagram SVGs scale down on narrow screens */
+div.graphviz {
+    overflow-x: auto;
+}
+
+div.graphviz svg {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Slightly tighter API signatures */
+dl.py dt {
+    font-size: 0.95em;
+}

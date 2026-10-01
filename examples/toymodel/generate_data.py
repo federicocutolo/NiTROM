@@ -1,3 +1,12 @@
+"""
+Generate training data
+======================
+
+Integrate step-response trajectories of a 3-state cubic toy model and save
+snapshots, weights, forcings, and time derivatives to disk in the on-disk
+layout that :class:`nitrom.training_data.TrainingPool` expects.
+"""
+
 import dill
 import numpy as np
 

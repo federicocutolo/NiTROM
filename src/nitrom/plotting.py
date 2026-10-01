@@ -7,8 +7,11 @@ across the whole repository::
     from nitrom.plotting import set_plot_style
     set_plot_style()
 
-``text.usetex`` is enabled, so a working LaTeX installation is required.
+``text.usetex`` is enabled when a LaTeX installation is found on ``PATH``
+(pass ``usetex=True``/``False`` to force it either way).
 """
+
+import shutil
 
 import matplotlib.pyplot as plt
 
@@ -60,7 +63,16 @@ STYLES = {
 }
 
 
-def set_plot_style() -> None:
-    """Apply :data:`PAPER_RCPARAMS` (and the amsmath LaTeX preamble) globally."""
-    plt.rcParams.update(PAPER_RCPARAMS)
-    plt.rc("text.latex", preamble=r"\usepackage{amsmath}")
+def set_plot_style(usetex: bool | None = None) -> None:
+    """Apply :data:`PAPER_RCPARAMS` (and the amsmath LaTeX preamble) globally.
+
+    :param usetex: enable ``text.usetex``; the default ``None`` enables it only
+        when a ``latex`` executable is found on ``PATH``, so scripts keep
+        working (with mathtext) on machines and CI runners without LaTeX
+    :type usetex: bool | None
+    """
+    if usetex is None:
+        usetex = shutil.which("latex") is not None
+    plt.rcParams.update(PAPER_RCPARAMS | {"text.usetex": usetex})
+    if usetex:
+        plt.rc("text.latex", preamble=r"\usepackage{amsmath}")

@@ -1,3 +1,12 @@
+"""
+Compare the trained ROMs
+========================
+
+Load every trained checkpoint, integrate step responses the models never saw
+during training, and compare output trajectories and relative errors across
+POD-Galerkin, OpInf, GAS-OpInf, NiTROM, and GAS-NiTROM.
+"""
+
 import os
 import pickle
 

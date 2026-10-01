@@ -1,3 +1,13 @@
+"""
+Train OpInf and GAS-OpInf ROMs
+==============================
+
+Fit operator-inference ROMs to the projected toy-model derivatives: a plain
+:class:`~nitrom.latent_space_models.PolynomialModel` and a stability-guaranteed
+:class:`~nitrom.latent_space_models.GasPolynomialModel`, both reduced to
+:math:`r=2` with POD bases.
+"""
+
 import os
 import pickle
 import time

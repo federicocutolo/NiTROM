@@ -1,3 +1,12 @@
+"""
+Train NiTROM and GAS-NiTROM ROMs
+================================
+
+Trajectory-based training: starting from the OpInf warm starts, optimize bases
+and operators jointly by minimizing the mismatch of the *time-marched* ROM with
+L-BFGS, using analytic adjoint gradients on Grassmann/Stiefel manifolds.
+"""
+
 import os
 import pickle
 import time
