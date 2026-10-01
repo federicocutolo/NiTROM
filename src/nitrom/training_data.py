@@ -1,3 +1,5 @@
+"""Trajectory training-data containers with MPI rank sharding and the on-disk file conventions."""
+
 from __future__ import annotations
 
 import os
@@ -291,6 +293,27 @@ class TrainingPool:
 
 
 class TrainingData:
+    """
+    Training-data view passed to the optimizer.
+
+    Wraps a :class:`TrainingPool` without copying the underlying arrays and
+    selects what one training run sees: a subset of trajectories, a truncated
+    time horizon, the quadrature used for the adjoint integrals, and optional
+    time-shifted "virtual" copies of each physical trajectory (``num_shifts`` /
+    ``shift_start_times``, inherited from the pool unless overridden via
+    keyword arguments).
+
+    :param pool: an instance of :class:`TrainingPool`
+    :param which_trajs: integer indices selecting a subset of the pool's
+        trajectories; physical indices are automatically expanded to their
+        virtual (time-shifted) copies
+    :param percent_time_length: fraction in ``(0, 1]`` of each trajectory's
+        snapshots to use
+    :param leggauss_deg: number of Gauss-Legendre quadrature points for the
+        gradient
+    :param nsave_rom: number of ROM snapshots stored between two FOM snapshots
+    """
+
     def __init__(
         self,
         pool,
@@ -300,15 +323,6 @@ class TrainingData:
         nsave_rom,
         **kwargs,
     ):
-        """
-        Training-data view passed to the optimizer.
-
-        pool:                an instance of TrainingPool
-        which_trajs:         integer indices selecting a subset of pool's trajectories
-        percent_time_length: fraction in (0, 1] of each trajectory's snapshots to use
-        leggauss_deg:        number of Gauss-Legendre quadrature points for the gradient
-        nsave_rom:           number of ROM snapshots stored between two FOM snapshots
-        """
         self.pool = pool
         self.backend = pool.backend
         bkend = self.backend

@@ -1,3 +1,5 @@
+"""Gradient-based training loop for inference modules (torch optimizers or Riemannian L-BFGS)."""
+
 from collections.abc import Callable
 from typing import Any
 

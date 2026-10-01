@@ -1,3 +1,5 @@
+"""Closed-form solver for the operator-inference weighted least-squares problem."""
+
 from typing import Any
 from nitrom.optimization.modules.opinf_module import OpInfModule
 

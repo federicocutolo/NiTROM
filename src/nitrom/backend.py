@@ -54,6 +54,7 @@ class Backend:
     """
 
     def __init__(self, name: str):
+        """:param name: ``"numpy"`` or ``"torch"``."""
         if name == "torch":
             self.xp = importlib.import_module("torch")
         elif name == "numpy":
@@ -72,19 +73,23 @@ class Backend:
 
     @property
     def is_torch(self) -> bool:
+        """Whether this backend dispatches to PyTorch."""
         return self.name == "torch"
 
     @property
     def is_numpy(self) -> bool:
+        """Whether this backend dispatches to NumPy."""
         return self.name == "numpy"
 
     # -- array creation (torch carries a device; numpy does not) -------------
     def zeros(self, shape, dtype=None, device="cpu"):
+        """Zero-filled array (:func:`numpy.zeros` / :func:`torch.zeros`)."""
         if self.is_torch:
             return self.xp.zeros(shape, dtype=dtype, device=device)
         return self.xp.zeros(shape, dtype=dtype)
 
     def eye(self, n, dtype=None, device="cpu"):
+        """Identity matrix (:func:`numpy.eye` / :func:`torch.eye`)."""
         if self.is_torch:
             return self.xp.eye(n, dtype=dtype, device=device)
         return self.xp.eye(n, dtype=dtype)
@@ -97,6 +102,7 @@ class Backend:
 
     # -- identically-named ops, forwarded -----------------------------------
     def zeros_like(self, x):
+        """Zero-filled array with the shape/dtype/device of ``x``."""
         return self.xp.zeros_like(x)
 
     #: Naive-contraction cost above which compiling a plan pays off.  Below it
@@ -404,9 +410,11 @@ class Backend:
         )
 
     def atleast_1d(self, x):
+        """View ``x`` with at least one dimension (:func:`numpy.atleast_1d`)."""
         return self.xp.atleast_1d(x)
 
     def outer(self, a, b):
+        """Outer product of two vectors (:func:`numpy.outer`)."""
         return self.xp.outer(a, b)
 
     def randn(self, shape, dtype=None, device="cpu"):
@@ -460,6 +468,7 @@ class Backend:
         return self.xp.linalg.norm(x, axis=axis)
 
     def inv(self, x):
+        """Matrix inverse (:func:`numpy.linalg.inv`)."""
         return self.xp.linalg.inv(x)
 
     def cholesky(self, x):
@@ -467,6 +476,7 @@ class Backend:
         return self.xp.linalg.cholesky(x)
 
     def eigvals(self, x):
+        """Eigenvalues of a general matrix (:func:`numpy.linalg.eigvals`)."""
         return self.xp.linalg.eigvals(x)
 
     def eigh(self, x):
@@ -491,30 +501,36 @@ class Backend:
         return self.xp.linalg.svd(x, full_matrices=full_matrices)
 
     def qr(self, x):
+        """QR decomposition (:func:`numpy.linalg.qr`)."""
         return self.xp.linalg.qr(x)
 
     # -- shape / creation ops whose kwarg names differ ----------------------
     def stack(self, arrays, axis=0):
+        """Stack arrays along a new axis (:func:`numpy.stack`)."""
         if self.is_torch:
             return self.xp.stack(arrays, dim=axis)
         return self.xp.stack(arrays, axis=axis)
 
     def concatenate(self, arrays, axis=0):
+        """Concatenate arrays along an existing axis (:func:`numpy.concatenate`)."""
         if self.is_torch:
             return self.xp.cat(arrays, dim=axis)
         return self.xp.concatenate(arrays, axis=axis)
 
     def arange(self, n, dtype=None, device="cpu"):
+        """Integer range ``0..n-1`` (:func:`numpy.arange`)."""
         if self.is_torch:
             return self.xp.arange(n, dtype=dtype, device=device)
         return self.xp.arange(n, dtype=dtype)
 
     def empty(self, shape, dtype=None, device="cpu"):
+        """Uninitialized array (:func:`numpy.empty` / :func:`torch.empty`)."""
         if self.is_torch:
             return self.xp.empty(shape, dtype=dtype, device=device)
         return self.xp.empty(shape, dtype=dtype)
 
     def linspace(self, start, stop, num, dtype=None, device="cpu"):
+        """Evenly spaced samples over ``[start, stop]`` (:func:`numpy.linspace`)."""
         if self.is_torch:
             return self.xp.linspace(start, stop, num, dtype=dtype, device=device)
         return self.xp.linspace(start, stop, num, dtype=dtype)
@@ -537,21 +553,25 @@ class Backend:
         return contextlib.nullcontext()
 
     def tensordot(self, a, b, axes):
+        """Tensor contraction over the given axes (:func:`numpy.tensordot`)."""
         if self.is_torch:
             return self.xp.tensordot(a, b, dims=axes)
         return self.xp.tensordot(a, b, axes=axes)
 
     def searchsorted(self, sorted_seq, values):
+        """Insertion indices into a sorted array (:func:`numpy.searchsorted`)."""
         if self.is_torch:
             return self.xp.searchsorted(sorted_seq.contiguous(), values)
         return self.xp.searchsorted(sorted_seq, values)
 
     def clip(self, x, lo, hi):
+        """Clamp values to ``[lo, hi]`` (:func:`numpy.clip` / :func:`torch.clamp`)."""
         if self.is_torch:
             return self.xp.clamp(x, lo, hi)
         return self.xp.clip(x, lo, hi)
 
     def array_equal(self, a, b):
+        """Elementwise/whole-array equality (:func:`numpy.array_equal`)."""
         return self.xp.equal(a, b) if self.is_torch else self.xp.array_equal(a, b)
 
     def mH(self, x):

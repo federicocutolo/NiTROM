@@ -1,3 +1,5 @@
+"""Registry mapping a ROM's learnable parameters to their optimization manifolds."""
+
 from dataclasses import dataclass
 from typing import Any
 

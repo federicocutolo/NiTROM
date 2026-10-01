@@ -227,15 +227,19 @@ class SGDDirection:
     line search then rescales it, so ``lr`` is only a nominal initial step."""
 
     def __init__(self, lr=1.0):
+        """:param lr: nominal initial step length."""
         self.lr = lr
 
     def direction(self, xs, g, manifolds):
+        """Return the search direction at ``xs`` given Riemannian gradients ``g``."""
         return [-self.lr * gk for gk in g]
 
     def update(self, xs_new, d, t, g, g_new, manifolds):
+        """Ingest the accepted step (stateless for SGD)."""
         pass
 
     def reset(self):
+        """Clear internal state (stateless for SGD)."""
         pass
 
 
@@ -245,12 +249,14 @@ class AdamDirection:
     iteration.  The strong-Wolfe line search sets the actual step length."""
 
     def __init__(self, lr=1.0, b1=0.9, b2=0.999, eps=1e-8):
+        """:param lr: nominal step; ``b1``/``b2``/``eps`` as in standard Adam."""
         self.lr, self.b1, self.b2, self.eps = lr, b1, b2, eps
         self.m = None
         self.v = None
         self.step = 0
 
     def direction(self, xs, g, manifolds):
+        """Return the tangent-projected Adam step at ``xs``."""
         bkend = get_backend()
         if self.m is None:
             self.m = [bkend.zeros_like(gk) for gk in g]
@@ -267,6 +273,7 @@ class AdamDirection:
         return d
 
     def update(self, xs_new, d, t, g, g_new, manifolds):
+        """Vector-transport the Adam moments to the tangent space at ``xs_new``."""
         if self.m is None:  # reset() just cleared the moments -> nothing to move
             return
         bkend = get_backend()
@@ -278,6 +285,7 @@ class AdamDirection:
                   for xn, vi, man in zip(xs_new, self.v, manifolds, strict=True)]
 
     def reset(self):
+        """Drop the accumulated moments (used at optimizer restarts)."""
         self.m = None
         self.v = None
         self.step = 0
@@ -288,10 +296,12 @@ class LBFGSDirection:
     vector-transported into the current tangent space every iteration."""
 
     def __init__(self, history_size=100):
+        """:param history_size: number of ``(s_k, y_k)`` curvature pairs kept."""
         self.history_size = history_size
         self.S, self.Y, self.RHO = [], [], []
 
     def direction(self, xs, g, manifolds):
+        """Return the two-loop-recursion quasi-Newton direction at ``xs``."""
         S, Y, RHO = self.S, self.Y, self.RHO
         q = [gk.copy() for gk in g]
         alpha = [0.0] * len(S)
@@ -310,6 +320,7 @@ class LBFGSDirection:
         return [-rk for rk in r]
 
     def update(self, xs_new, d, t, g, g_new, manifolds):
+        """Append the new curvature pair and transport the memory to ``xs_new``."""
         s_k = [transport(xn, t * dk, m)
                for xn, dk, m in zip(xs_new, d, manifolds, strict=True)]
         Tg = [transport(xn, gk, m)
@@ -333,6 +344,7 @@ class LBFGSDirection:
                 self.RHO.pop(0)
 
     def reset(self):
+        """Drop the curvature memory (used at optimizer restarts)."""
         self.S, self.Y, self.RHO = [], [], []
 
 

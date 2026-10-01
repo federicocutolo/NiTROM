@@ -1,3 +1,5 @@
+"""Polynomial-manifold projection: linear encoder paired with a polynomial decoder."""
+
 from itertools import combinations
 from string import ascii_lowercase
 from typing import Any

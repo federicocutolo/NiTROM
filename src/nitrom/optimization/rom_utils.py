@@ -1,3 +1,5 @@
+"""Helpers for initializing structured ROMs and performing POD on training pools."""
+
 from ..backend import get_backend
 
 
@@ -49,18 +51,42 @@ def create_initial_guess(A, H=None, r=None):
 
 
 def compute_Q(Qhat):
+    r"""
+    Assemble the SPD factor :math:`Q = \hat{Q}^{-1}\hat{Q}^{-\top}` of the GAS
+    parameterization.
+
+    :param Qhat: free GAS parameter :math:`\hat{Q}` (invertible, ``(r, r)``)
+    :returns: ``(Q, Q_inv)`` with :math:`Q_{\mathrm{inv}} = \hat{Q}^{-1}`
+    """
     Q_inv = get_backend().inv(Qhat)
     Q = Q_inv @ Q_inv.T
     return Q, Q_inv
 
 
 def compute_JR(Jhat, Rhat):
+    r"""
+    Assemble the skew part :math:`J = \hat{J} - \hat{J}^\top` and PSD part
+    :math:`R = \hat{R}\hat{R}^\top` of the GAS linear operator.
+
+    :param Jhat: free parameter generating the skew part, ``(r, r)``
+    :param Rhat: free factor generating the PSD part, ``(r, r)``
+    :returns: ``(J, R)``
+    """
     J = Jhat - Jhat.T
     R = Rhat @ Rhat.T
     return J, R
 
 
 def compute_H(Hhat, Q):
+    r"""
+    Assemble the energy-preserving quadratic tensor
+    :math:`H_{ijk} = (\hat{H}_{ijl} - \hat{H}_{lji})\,Q_{lk}` from the free
+    parameter :math:`\hat{H}`.
+
+    :param Hhat: free quadratic parameter, ``(r, r, r)``
+    :param Q: SPD factor from :func:`compute_Q`
+    :returns: assembled quadratic operator ``H``, ``(r, r, r)``
+    """
     H2 = get_backend().permute(Hhat, (2, 1, 0))
     M_tensor = Hhat - H2
     H = M_tensor @ Q
@@ -68,6 +94,17 @@ def compute_H(Hhat, Q):
 
 
 def construct_operators(tensors, poly_comp):
+    """
+    Assemble the physical ROM operators from the free GAS parameters.
+
+    :param tensors: free parameters ``[Qhat, Jhat, Rhat, (Hhat)]`` (entries
+        present according to *poly_comp*)
+    :param poly_comp: polynomial degrees of the model (``1`` -> linear ``A``,
+        ``2`` -> quadratic ``H``)
+    :returns: ``(assembled, intermediates)`` — the physical operators
+        ``(A, (H))`` and the intermediate factors ``(Q, Q_inv, (J, R))``
+        reused by :func:`propagate_gradients`
+    """
     tensors_new = []
     other_tensors = []
 
@@ -91,6 +128,16 @@ def construct_operators(tensors, poly_comp):
 
 
 def propagate_gradients(grads, tensors, tensors_hat, poly_comp):
+    """
+    Chain gradients w.r.t. the assembled operators back to the free GAS
+    parameters (the adjoint of :func:`construct_operators`).
+
+    :param grads: gradients w.r.t. the assembled operators ``(A, (H))``
+    :param tensors: intermediate factors returned by :func:`construct_operators`
+    :param tensors_hat: the free parameters ``[Qhat, Jhat, Rhat, (Hhat)]``
+    :param poly_comp: polynomial degrees of the model
+    :returns: gradients w.r.t. ``(Qhat, Jhat, Rhat, (Hhat))``
+    """
     bkend = get_backend()
     grad_tensors = [bkend.zeros_like(tensor_hat) for tensor_hat in tensors_hat]
     Q = tensors[0]
@@ -126,6 +173,17 @@ def propagate_gradients(grads, tensors, tensors_hat, poly_comp):
 
 
 def perform_POD(pool, r):
+    """
+    Compute the leading *r* POD modes of a training pool's snapshots.
+
+    Concatenates this rank's trajectories into a single snapshot matrix and
+    takes its truncated SVD. Serial (per-rank) counterpart of the distributed
+    :func:`nitrom.utils.compute_POD`; prefer that one under MPI.
+
+    :param pool: a :class:`~nitrom.training_data.TrainingPool`
+    :param r: number of modes to keep
+    :returns: POD basis of shape ``(N, r)``
+    """
     bkend = get_backend()
     device = pool.device
     dtype = pool.dtype

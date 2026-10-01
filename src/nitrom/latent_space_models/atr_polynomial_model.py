@@ -1,3 +1,5 @@
+"""Attracting-trapping-region (ATR) constrained polynomial ROM."""
+
 from typing import Any
 
 from .gas_polynomial_model import GasPolynomialModel

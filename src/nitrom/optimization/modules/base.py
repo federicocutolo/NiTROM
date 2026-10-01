@@ -1,3 +1,5 @@
+"""Parameter-container and inference-module ABCs that every training module builds on."""
+
 import abc
 from collections import OrderedDict
 from typing import Any

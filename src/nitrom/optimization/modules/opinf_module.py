@@ -1,3 +1,5 @@
+"""Operator-inference (OpInf) weighted least-squares training module."""
+
 from typing import Any
 
 from nitrom.latent_space_models.gas_polynomial_model import GasPolynomialModel

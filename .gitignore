@@ -177,3 +177,8 @@ cython_debug/
 *.pdf
 *.eps
 *.mp4
+
+# Sphinx documentation
+docs/auto_examples/
+docs/sg_execution_times.rst
+!docs/_static/**

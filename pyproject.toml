@@ -28,6 +28,14 @@ dev = [
     "pytest-xdist",
     "ruff",
 ]
+docs = [
+    "sphinx>=7",
+    "furo",
+    "myst-parser",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "sphinx-gallery",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

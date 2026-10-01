@@ -1,3 +1,5 @@
+"""Reconstruction-loss training module for :class:`~nitrom.projections.PolynomialProjection` manifolds."""
+
 from typing import Any
 
 from nitrom.backend import get_backend

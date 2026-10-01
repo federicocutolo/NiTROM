@@ -1,3 +1,5 @@
+"""Oblique linear projection defined by trial and test bases."""
+
 from typing import Any
 
 from ..backend import get_backend

@@ -1,3 +1,5 @@
+"""Abstract base class shared by all NiTROM latent-space dynamics models."""
+
 import abc
 from typing import Any
 

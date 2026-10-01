@@ -1,3 +1,5 @@
+"""Abstract base class for projections between full and reduced spaces."""
+
 import abc
 from typing import Any
 
