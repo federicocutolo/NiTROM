@@ -1,3 +1,5 @@
+"""NiTROM trajectory-based training module backed by a :class:`~nitrom.roms.ParamRegistry`."""
+
 from typing import Any
 
 import numpy as np
@@ -143,10 +145,13 @@ class NitromModule(InferenceModule):
     ) -> None:
         super().__init__()
 
-        if time_stepper not in ("rk2", "rk4", "backward_euler", "rk45"):
+        if time_stepper not in (
+            "rk2", "rk4", "backward_euler", "rk45",
+            "implicit_midpoint", "yoshida4",
+        ):
             raise ValueError(
-                f"time_stepper must be 'rk2', 'rk4', 'backward_euler', or 'rk45', "
-                f"got {time_stepper!r}."
+                f"time_stepper must be 'rk2', 'rk4', 'backward_euler', 'rk45', "
+                f"'implicit_midpoint', or 'yoshida4', got {time_stepper!r}."
             )
 
         if adjoint_method not in ("discrete", "continuous"):
@@ -355,7 +360,9 @@ class NitromModule(InferenceModule):
         ntraj = self.training_data.X.shape[0]
         r = self.model.state_dimension
         itemsize = getattr(self.training_data.X.dtype, "itemsize", 8)
-        n_stages = 4  # upper bound over the fixed-step tableaus
+        # Upper bound over the fixed-step tableaus (rk4: 4, yoshida4: 3,
+        # rk2: 2, backward_euler/implicit_midpoint: 1).
+        n_stages = 4
         nbytes = ntraj * r * itemsize * ((nt_sim + 1) + nt_sim * n_stages)
         if nbytes > self.max_dense_bytes:
             return None

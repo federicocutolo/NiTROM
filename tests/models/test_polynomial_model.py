@@ -651,3 +651,30 @@ class TestVjpEvaluateRhs:
         v = torch.randn(N, dtype=torch.float64)
         grads = model.vjp_evaluate_rhs(z_torch, v)
         assert len(grads) == len(poly_comp)
+
+
+# ---------------------------------------------------------------------------
+# fixed-B override tests
+# ---------------------------------------------------------------------------
+
+class TestFixedBOverride:
+
+    def test_fixed_B_overrides_supplied_tensors(self):
+        """A fixed B in forcing_config must win over the B entry of tensors."""
+        rng = np.random.default_rng(900)
+        P = 3
+        A = torch.tensor(rng.standard_normal((N, N)), dtype=torch.float64)
+        B_from_tensors = torch.tensor(
+            rng.standard_normal((N, P)), dtype=torch.float64
+        )
+        B_fixed = torch.tensor(rng.standard_normal((N, P)), dtype=torch.float64)
+
+        model = PolynomialModel(
+            N,
+            [1],
+            tensors=[A, B_from_tensors],
+            forcing_config={"forcing_exists": True, "m": P, "B": B_fixed},
+        )
+
+        np.testing.assert_allclose(model.B.numpy(), B_fixed.numpy())
+        assert not hasattr(model, "bkend")

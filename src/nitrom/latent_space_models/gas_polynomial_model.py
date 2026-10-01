@@ -1,14 +1,15 @@
+"""Globally-asymptotically-stable (GAS) constrained polynomial ROM."""
+
 from typing import Any
 from scipy.linalg import solve_continuous_lyapunov
 import numpy as np
 
 
-from .model import Model
-from .polynomial_model import PolynomialModel
+from .structured_polynomial_model import StructuredPolynomialModel
 from ..backend import mpi_rank_size
 
 
-class GasPolynomialModel(Model):
+class GasPolynomialModel(StructuredPolynomialModel):
     r"""
     GAS-constrained polynomial ROM.
 
@@ -56,67 +57,31 @@ class GasPolynomialModel(Model):
         gas_params: list | None = None,
         forcing_config: dict | None = None,
     ):
-        # Determine GAS parameter names, shapes, and initializations
-        specs = self._gas_param_specs(r, poly_comp)
-        param_names: list[str] = [name for name, _, _ in specs]
-
-        # Track forcing.  An optional fixed input operator may be supplied via
-        # ``forcing_config["B"]``; B stays a parameter but is flagged
-        # non-learnable so that its gradient is zeroed.
-        forcing_exists = forcing_config is not None and forcing_config.get(
-            "forcing_exists", False
-        )
-        B_fixed = forcing_config.get("B") if forcing_config else None
-        if forcing_exists:
-            param_names.append("B")
-
-        super().__init__(r, param_names, device, dtype)
-        bkend = self.backend
-        self.poly_comp = self._inner_poly_comp(poly_comp)
-        self.forcing_exists = forcing_exists
-
-        # Set GAS parameters as attributes
-        if gas_params is not None:
-            for name, tensor in zip(param_names, gas_params, strict=True):
-                setattr(
-                    self, name,
-                    bkend.asarray(tensor, dtype=self.dtype, device=self.device),
-                )
-        else:
-            # Initialize the GAS parameters (K, R, Q, S, ...; B handled below)
-            for name, shape, init in specs:
-                alloc = bkend.zeros if init == "zeros" else bkend.randn
-                setattr(
-                    self, name,
-                    alloc(shape, dtype=self.dtype, device=self.device),
-                )
-            # Initialize B (fixed value if supplied, else zeros)
-            if forcing_exists:
-                m = forcing_config["m"]
-                self.B = (
-                    bkend.asarray(B_fixed, dtype=self.dtype, device=self.device)
-                    if B_fixed is not None
-                    else bkend.zeros((r, m), dtype=self.dtype, device=self.device)
-                )
-
-        # A supplied fixed B always overrides any value from gas_params.
-        if forcing_exists and B_fixed is not None:
-            self.B = bkend.asarray(B_fixed, dtype=self.dtype, device=self.device)
-
-        # Precompute inverses and products for Q, R, and S
-        self._precompute_inverses()
-
-        # Assemble physical tensors and create the inner PolynomialModel
-        tensors = self.assemble_gas_tensors()
-        self.model = PolynomialModel(
+        super().__init__(
             r,
-            self.poly_comp,
+            poly_comp,
             device=device,
-            dtype=self.dtype,
+            dtype=dtype,
             instability_threshold=instability_threshold,
-            tensors=tensors,
+            params=gas_params,
             forcing_config=forcing_config,
         )
+
+    # ------------------------------------------------------------------
+    # StructuredPolynomialModel hooks, mapped onto the GAS-named methods
+    # (subclasses such as AtrPolynomialModel override the GAS names).
+    # ------------------------------------------------------------------
+    def _param_specs(
+        self, r: int, poly_comp: list[int]
+    ) -> list[tuple[str, tuple[int, ...], str]]:
+        return self._gas_param_specs(r, poly_comp)
+
+    def _precompute(self) -> None:
+        self._precompute_inverses()
+
+    def assemble_inner_tensors(self) -> list[Any]:
+        """Assemble the physical operator tensors from the free GAS parameters."""
+        return self.assemble_gas_tensors()
 
     @staticmethod
     def _gas_param_specs(
@@ -143,16 +108,6 @@ class GasPolynomialModel(Model):
             specs.append(("S", (r, r, r), "randn"))
         return specs
 
-    @staticmethod
-    def _inner_poly_comp(poly_comp: list[int]) -> list[int]:
-        """
-        Polynomial degrees carried by the inner :class:`PolynomialModel`.
-
-        Identity for GAS; subclasses override it when the assembled dynamics
-        need extra degrees (e.g. the ATR model, which adds a constant term).
-        """
-        return list(poly_comp)
-
     def _precompute_inverses(self) -> None:
         """Precompute and cache inverses and products for Q and R."""
         bkend = self.backend
@@ -165,10 +120,6 @@ class GasPolynomialModel(Model):
         if hasattr(self, "S"):
             # S_diff_jik = S_jik - S_ijk
             self._S_diff = self.S - bkend.permute(self.S, (1, 0, 2))
-
-    def get_params(self) -> list[Any]:
-        """Return the current GAS parameter tensors as a list."""
-        return [getattr(self, name) for name in self.param_names]
 
     def assemble_gas_tensors(self) -> list[Any]:
         r"""
@@ -196,21 +147,6 @@ class GasPolynomialModel(Model):
             tensors.append(self.B)
 
         return tensors
-
-    def update_params(self, params: list) -> None:
-        r"""
-        Update the GAS parameters (and B if present), reassemble
-        physical tensors, and push them into the inner
-        :class:`PolynomialModel`.
-
-        :param params: parameter tensors matching :attr:`param_names`
-            (e.g. ``[K, R, Q, S]`` or ``[K, R, Q, S, B]``)
-        :type params: list
-        """
-        for name, tensor in zip(self.param_names, params, strict=True):
-            setattr(self, name, tensor)
-        self._precompute_inverses()
-        self.model.update_params(self.assemble_gas_tensors())
 
     def retract_general_tensors_to_gas_tensors(
         self,
@@ -444,18 +380,6 @@ class GasPolynomialModel(Model):
         ]
         self.update_params(params)
 
-    def evaluate_rhs(self, t: float, z: Any, **kwargs) -> Any:
-        """Delegate to the inner :class:`PolynomialModel`."""
-        return self.model.evaluate_rhs(t, z, **kwargs)
-
-    def evaluate_adjoint_rhs(self, t: float, z: Any, Z: Any, **kwargs) -> Any:
-        """Delegate to the inner :class:`PolynomialModel`."""
-        return self.model.evaluate_adjoint_rhs(t, z, Z, **kwargs)
-
-    def inner_params(self) -> list[Any]:
-        """Return the inner parameter tensors A, H, [B]."""
-        return self.model.get_params()
-
     def project_inner_gradients(self, inner_grads: list[Any]) -> list[Any]:
         """
         Project the accumulated inner gradients (w.r.t A, H, [B]) back to the 
@@ -504,43 +428,3 @@ class GasPolynomialModel(Model):
             grads.append(grad_B)
 
         return grads
-
-    def inner_vjp_evaluate_rhs(self, z: Any, v: Any, reg: float = 0.0, **kwargs) -> list[Any]:
-        r"""
-        VJP of the RHS with respect to the inner model parameters.
-
-        Calls the inner :class:`PolynomialModel` VJP to get gradients
-        w.r.t. ``(A, H, [B])``.
-
-        :param z: state vector of shape ``(n,)`` or ``(m, n)``
-        :param v: upstream adjoint seed, same shape as ``z``
-        :returns: list of gradients matching :meth:`inner_params`
-        :rtype: list
-        """
-        return self.model.vjp_evaluate_rhs(z, v, reg=reg, **kwargs)
-
-    def inner_batched_vjp_evaluate_rhs(
-        self, Z: Any, V: Any, U: Any = None, out: list | None = None,
-        max_bytes: int = 64 << 20,
-    ) -> list[Any]:
-        """Batched VJP w.r.t. the inner ``(A, H, [B])`` tensors.
-
-        The GAS parameters are recovered from these by
-        :meth:`project_inner_gradients`, which the caller applies once at the end
-        of the sweep.
-        """
-        return self.model.batched_vjp_evaluate_rhs(
-            Z, V, U=U, out=out, max_bytes=max_bytes
-        )
-
-    def vjp_evaluate_rhs(self, z: Any, v: Any, reg: float = 0.0, **kwargs) -> list[Any]:
-        r"""
-        VJP of the RHS with respect to the GAS parameters.
-
-        :param z: state vector of shape ``(n,)`` or ``(m, n)``
-        :param v: upstream adjoint seed, same shape as ``z``
-        :returns: list of gradients matching :attr:`param_names`
-        :rtype: list
-        """
-        inner_grads = self.inner_vjp_evaluate_rhs(z, v, reg=reg, **kwargs)
-        return self.project_inner_gradients(inner_grads)

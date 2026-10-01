@@ -1,9 +1,28 @@
+"""Runge-Kutta IVP solvers with batched states and a discrete adjoint for gradient propagation."""
+
 from collections.abc import Callable
 from typing import Any, Literal, NamedTuple
 
 from nitrom.backend import get_backend
 from nitrom.utils import interp_quadratic
 
+
+# Yoshida triple-jump coefficients: composing a symmetric order-2 method with
+# substeps (g1, g2, g1) requires 2*g1 + g2 = 1 (consistency) and
+# 2*g1**3 + g2**3 = 0 (cancels the leading error term), giving order 4.
+_CBRT2 = 2.0 ** (1.0 / 3.0)
+_YOSHIDA_G1 = 1.0 / (2.0 - _CBRT2)
+_YOSHIDA_G2 = -_CBRT2 / (2.0 - _CBRT2)
+
+_METHODS = (
+    "rk4", "rk2", "backward_euler", "rk45", "implicit_midpoint", "yoshida4",
+)
+FixedStepMethod = Literal[
+    "rk4", "rk2", "backward_euler", "implicit_midpoint", "yoshida4"
+]
+Method = Literal[
+    "rk4", "rk2", "backward_euler", "rk45", "implicit_midpoint", "yoshida4"
+]
 
 _BUTCHER_TABLEAUS = {
     "rk4": {
@@ -43,6 +62,34 @@ _BUTCHER_TABLEAUS = {
             [19372.0/6561.0, -25360.0/2187.0, 64448.0/6561.0, -212.0/729.0, 0.0, 0.0, 0.0],
             [9017.0/3168.0, -355.0/33.0, 46732.0/5247.0, 49.0/176.0, -5103.0/18656.0, 0.0, 0.0],
             [35.0/384.0, 0.0, 500.0/1113.0, 125.0/192.0, -2187.0/6784.0, 11.0/84.0, 0.0]
+        ]
+    },
+    # Gauss-Legendre s=1: symplectic, symmetric, order 2.
+    "implicit_midpoint": {
+        "c": [0.5],
+        "b": [1.0],
+        "A": [
+            [0.5]
+        ]
+    },
+    # Yoshida's 4th-order symplectic composition of implicit-midpoint substeps
+    # of sizes (g1*h, g2*h, g1*h).  Composing midpoint substeps of sizes
+    # gamma_i*h is exactly the DIRK tableau A[i][j] = gamma_j (j < i),
+    # A[i][i] = gamma_i / 2, b = [gamma_1, gamma_2, gamma_3],
+    # c_i = sum_{j<i} gamma_j + gamma_i / 2.  Note c is non-monotone: the
+    # middle substep runs backward (g2 < 0), which is intrinsic to Yoshida's
+    # scheme and perfectly fine for the stage solves.
+    "yoshida4": {
+        "c": [
+            _YOSHIDA_G1 / 2.0,
+            _YOSHIDA_G1 + _YOSHIDA_G2 / 2.0,
+            _YOSHIDA_G1 + _YOSHIDA_G2 + _YOSHIDA_G1 / 2.0,
+        ],
+        "b": [_YOSHIDA_G1, _YOSHIDA_G2, _YOSHIDA_G1],
+        "A": [
+            [_YOSHIDA_G1 / 2.0, 0.0, 0.0],
+            [_YOSHIDA_G1, _YOSHIDA_G2 / 2.0, 0.0],
+            [_YOSHIDA_G1, _YOSHIDA_G2, _YOSHIDA_G1 / 2.0],
         ]
     }
 }
@@ -228,7 +275,7 @@ def evolve(
     t: float,
     x: Any,
     dt: float,
-    method: Literal["rk4", "rk2", "backward_euler", "rk45"] = "rk4",
+    method: Method = "rk4",
     newton_tol: float = 1e-8,
     newton_max_iter: int = 20,
     return_error: bool = False,
@@ -242,7 +289,8 @@ def evolve(
     :param t: current time
     :param x: current state of shape ``(n,)`` or ``(B, n)``
     :param dt: time-step size
-    :param method: ``"rk4"``, ``"rk2"``, ``"backward_euler"``, or ``"rk45"``
+    :param method: ``"rk4"``, ``"rk2"``, ``"backward_euler"``, ``"rk45"``,
+        ``"implicit_midpoint"``, or ``"yoshida4"``
     :param newton_tol: tolerance for the Newton solver (implicit methods only)
     :param newton_max_iter: max iterations for the Newton solver (implicit only)
     :param return_error: if True, also return the estimated local error (rk45 only)
@@ -279,7 +327,7 @@ def solve_ivp(
     tf: float,
     dt: float,
     t_eval: Any,
-    method: Literal["rk4", "rk2", "backward_euler", "rk45"] = "rk4",
+    method: Method = "rk4",
     newton_tol: float = 1e-8,
     newton_max_iter: int = 20,
     atol: float = 1e-6,
@@ -304,7 +352,8 @@ def solve_ivp(
     :param tf: final time
     :param dt: desired time-step size (will be adjusted slightly; or initial step size for rk45)
     :param t_eval: times at which to return the solution, shape ``(n_eval,)``
-    :param method: ``"rk4"``, ``"rk2"``, ``"backward_euler"``, or ``"rk45"``
+    :param method: ``"rk4"``, ``"rk2"``, ``"backward_euler"``, ``"rk45"``,
+        ``"implicit_midpoint"``, or ``"yoshida4"``
     :param newton_tol: tolerance for the Newton solver (implicit methods only)
     :param newton_max_iter: max iterations for the Newton solver (implicit only)
     :param atol: absolute error tolerance (rk45 only)
@@ -424,7 +473,7 @@ def solve_ivp_dense(
     t0: float,
     tf: float,
     dt: float,
-    method: Literal["rk4", "rk2", "backward_euler"] = "rk4",
+    method: FixedStepMethod = "rk4",
     newton_tol: float = 1e-8,
     newton_max_iter: int = 20,
     save_every: int = 1,
@@ -517,7 +566,7 @@ def solve_adjoint_ivp_discrete(
     sub_t: Any,
     h: float,
     lam_init: Any,
-    method: Literal["rk4", "rk2", "backward_euler", "rk45"] = "rk4",
+    method: Method = "rk4",
     newton_tol: float = 1e-8,
     newton_max_iter: int = 20,
     *args,
@@ -536,7 +585,8 @@ def solve_adjoint_ivp_discrete(
     :param sub_t: time values of the sub-grid: ``(n_substeps + 1,)``
     :param h: step size (ignored if non-uniform, computed from sub_t instead)
     :param lam_init: initial adjoint seed state: ``(B, n)``
-    :param method: ``"rk4"``, ``"rk2"``, ``"backward_euler"``, or ``"rk45"``
+    :param method: ``"rk4"``, ``"rk2"``, ``"backward_euler"``, ``"rk45"``,
+        ``"implicit_midpoint"``, or ``"yoshida4"``
     :param stages_G: forward Runge-Kutta stage states from
         :func:`solve_ivp_dense`, shape ``(B, n, n_substeps, s)``.  When given,
         the stages are read from here instead of being recomputed, which for

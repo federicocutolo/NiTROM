@@ -75,7 +75,11 @@ def _fom(seed: int = 4) -> LinearOutputFOM:
 # count barely matters -- so it just follows rk4.
 #
 # This is what keeps the file at ~2 min rather than ~10.
-_N_SUBSTEPS_CONTINUOUS = {"rk4": 25, "rk45": 25, "rk2": 100, "backward_euler": 50}
+_N_SUBSTEPS_CONTINUOUS = {
+    "rk4": 25, "rk45": 25, "rk2": 100, "backward_euler": 50,
+    # implicit_midpoint is 2nd order (like rk2); yoshida4 is 4th (like rk4).
+    "implicit_midpoint": 100, "yoshida4": 25,
+}
 
 
 def _reference_grad(module, model_factory, time_stepper, adjoint_method):
@@ -117,7 +121,9 @@ def _module(model, time_stepper="rk4", adjoint_method="discrete", atol=1e-6, rto
 
 
 @pytest.mark.parametrize("adjoint_method", ["discrete", "continuous"])
-@pytest.mark.parametrize("time_stepper", ["rk4", "rk2", "backward_euler", "rk45"])
+@pytest.mark.parametrize("time_stepper", [
+    "rk4", "rk2", "backward_euler", "rk45", "implicit_midpoint", "yoshida4",
+])
 def test_gradient_polynomial_rom(adjoint_method, time_stepper):
     def make_model():
         g = torch.Generator().manual_seed(2)
@@ -154,7 +160,9 @@ def test_gradient_polynomial_rom(adjoint_method, time_stepper):
 
 
 @pytest.mark.parametrize("adjoint_method", ["discrete", "continuous"])
-@pytest.mark.parametrize("time_stepper", ["rk4", "rk2", "backward_euler", "rk45"])
+@pytest.mark.parametrize("time_stepper", [
+    "rk4", "rk2", "backward_euler", "rk45", "implicit_midpoint", "yoshida4",
+])
 def test_gradient_gas_rom(adjoint_method, time_stepper):
     def make_model():
         g = torch.Generator().manual_seed(3)
@@ -190,7 +198,7 @@ def test_gradient_gas_rom(adjoint_method, time_stepper):
         rtol_check, atol_check = 3e-2, 3e-2
     elif time_stepper == "rk45":
         rtol_check, atol_check = 2e-3, 1.5e-2
-    elif time_stepper == "backward_euler":
+    elif time_stepper in ("backward_euler", "implicit_midpoint", "yoshida4"):
         rtol_check, atol_check = 1e-4, 5e-6
     else:
         rtol_check, atol_check = 1e-4, 1e-6

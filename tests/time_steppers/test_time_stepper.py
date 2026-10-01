@@ -40,7 +40,7 @@ def _solve_at_tf(model, x0, dt, method):
     t = T0
     # Use tighter tolerance for implicit convergence order checks
     kwargs = {}
-    if method == "backward_euler":
+    if method in ("backward_euler", "implicit_midpoint", "yoshida4"):
         kwargs["newton_tol"] = 1e-14
         kwargs["newton_max_iter"] = 30
     for _ in range(nt):
@@ -167,12 +167,53 @@ class TestBackwardEulerConvergence:
 
 
 # ---------------------------------------------------------------------------
+# Implicit midpoint convergence tests
+# ---------------------------------------------------------------------------
+
+class TestImplicitMidpointConvergence:
+
+    def test_unbatched(self, model, x0_unbatched):
+        _, errors = _compute_successive_errors(
+            model, x0_unbatched, "implicit_midpoint"
+        )
+        _check_order(errors, expected_order=2)
+
+    def test_batched(self, model, x0_batched):
+        _, errors = _compute_successive_errors(
+            model, x0_batched, "implicit_midpoint"
+        )
+        _check_order(errors, expected_order=2)
+
+
+# ---------------------------------------------------------------------------
+# Yoshida-4 convergence tests
+# ---------------------------------------------------------------------------
+
+class TestYoshida4Convergence:
+
+    def test_unbatched(self, model, x0_unbatched):
+        _, errors = _compute_successive_errors(
+            model, x0_unbatched, "yoshida4", dt_base=0.01
+        )
+        _check_order(errors, expected_order=4, rtol=5e-2)
+
+    def test_batched(self, model, x0_batched):
+        _, errors = _compute_successive_errors(
+            model, x0_batched, "yoshida4", dt_base=0.01
+        )
+        _check_order(errors, expected_order=4, rtol=5e-2)
+
+
+# ---------------------------------------------------------------------------
 # Batched vs unbatched consistency
 # ---------------------------------------------------------------------------
 
 class TestBatchedConsistency:
 
-    @pytest.mark.parametrize("method", ["rk4", "rk2", "backward_euler", "rk45"])
+    @pytest.mark.parametrize("method", [
+        "rk4", "rk2", "backward_euler", "rk45",
+        "implicit_midpoint", "yoshida4",
+    ])
     def test_batched_matches_unbatched(self, model, method):
         """Each row of the batched solution should match the
         corresponding unbatched solve."""
@@ -186,8 +227,9 @@ class TestBatchedConsistency:
 
         sol_batched = _solve_at_tf(model, x0_batch, dt, method)  # (B, n)
 
-        rtol = 1e-8 if method == "backward_euler" else 1e-12
-        atol = 1e-13 if method == "backward_euler" else 0.0
+        implicit = method in ("backward_euler", "implicit_midpoint", "yoshida4")
+        rtol = 1e-8 if implicit else 1e-12
+        atol = 1e-13 if implicit else 0.0
         for b in range(B):
             sol_single = _solve_at_tf(model, x0_batch[b], dt, method)  # (n,)
             np.testing.assert_allclose(
@@ -203,7 +245,9 @@ class TestBatchedConsistency:
 
 class TestImplicitAutograd:
 
-    @pytest.mark.parametrize("method", ["backward_euler", "rk45"])
+    @pytest.mark.parametrize(
+        "method", ["backward_euler", "rk45", "implicit_midpoint", "yoshida4"]
+    )
     def test_gradients_propagate(self, model, x0_unbatched, method):
         """Verify that gradients propagate back to model parameters through solve_ivp."""
         params = model.get_params()

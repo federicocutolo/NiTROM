@@ -1,6 +1,60 @@
+"""Shared numerical utilities: symplectic-structure validation, POD, and quadratic interpolation."""
+
 from typing import Any
 
 from .backend import get_backend
+
+
+def validate_symplectic_structure(J: Any, tol: float = 1e-10) -> None:
+    r"""
+    Validate that ``J`` is a canonical-type full-order symplectic structure.
+
+    Requirements (each raises ``ValueError`` when violated):
+
+    * square with even dimension;
+    * skew-symmetric, :math:`J = -J^\top`;
+    * orthogonal-skew, :math:`J J = -I` -- equivalently
+      :math:`J^{-1} = -J` and :math:`J^{-\top} = J`.
+
+    Note the contrast with the *reduced* structure
+    :math:`\hat{J} = \Phi^\top J \Phi`: being non-canonical, :math:`\hat{J}`
+    is only guaranteed skew-symmetric (:math:`\hat{J} = -\hat{J}^\top`) and
+    in general :math:`\hat{J}\hat{J} \neq -I`.
+
+    :param J: candidate structure of shape ``(n, n)``; a dense backend array
+        or a scipy sparse matrix
+    :param tol: relative tolerance for the skewness and orthogonality checks
+    :raises ValueError: if any requirement fails
+    """
+    import scipy.sparse as sp
+
+    if J.ndim != 2 or J.shape[0] != J.shape[1]:
+        raise ValueError(f"J must be square, got shape {tuple(J.shape)}.")
+    n = J.shape[0]
+    if n % 2 != 0:
+        raise ValueError(
+            f"J must have even dimension (symplectic structure), got n={n}."
+        )
+
+    if sp.issparse(J):
+        scale = max(float(abs(J).max()), 1.0)
+        skew_err = float(abs(J + J.T).max())
+        orth_err = float(abs(J @ J + sp.identity(n, format="csr")).max())
+    else:
+        bkend = get_backend()
+        xp = bkend.xp
+        scale = max(float(xp.abs(J).max()), 1.0)
+        skew_err = float(xp.abs(J + J.T).max())
+        eye = bkend.eye(n, dtype=J.dtype, device=bkend.device_of(J))
+        orth_err = float(xp.abs(J @ J + eye).max())
+
+    if skew_err > tol * scale:
+        raise ValueError("J must be skew-symmetric (J = -J^T).")
+    if orth_err > tol * scale * scale:
+        raise ValueError(
+            "J must satisfy J @ J = -I (equivalently J^{-1} = -J and "
+            "J^{-T} = J): a canonical-type symplectic structure."
+        )
 
 
 def compute_POD(

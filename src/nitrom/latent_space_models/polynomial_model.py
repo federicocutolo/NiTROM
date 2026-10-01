@@ -1,3 +1,5 @@
+"""Generic (unconstrained) polynomial ROM with optional external forcing."""
+
 from itertools import combinations
 from string import ascii_lowercase
 from typing import Any
@@ -92,7 +94,7 @@ class PolynomialModel(Model):
         self.update_params(tensors)
         # A supplied fixed B always overrides any value from tensors.
         if forcing_exists and B_fixed is not None:
-            self.bkend = self.backend.asarray(
+            self.B = self.backend.asarray(
                 B_fixed, dtype=self.dtype, device=self.device
             )
         self._generate_einsum_subscripts()
